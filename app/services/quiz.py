@@ -44,6 +44,8 @@ def _prompt(*, topic: str, difficulty: str, question_count: int, output_language
         "Ensure exactly one correct option per question. Make distractors plausible.\n"
         "IMPORTANT RULES:\n"
         "- Return EXACTLY the requested number of questions.\n"
+        "- Each question stem must ask about a *specific fact, definition, step, or contrast* from the "
+        "Context (not generic prompts like 'which statement is most closely about the topic').\n"
         "- No repeated questions.\n"
         "- No repeated option sets across questions.\n"
         "- Each option must be a complete claim or answer (not labels about answers).\n"
@@ -108,7 +110,26 @@ def _option_grounded(option: str, context: str) -> bool:
         inter = len(ow & _words(sent))
         if inter > best:
             best = inter
-    return best >= max(4, int(0.32 * len(ow)))
+    return best >= max(3, int(0.22 * len(ow)))
+
+
+def _option_soft_overlap(option: str, context: str) -> bool:
+    """True if enough content words from the option appear in the context (accepts paraphrases)."""
+    ow = _words(option)
+    cw = _words(context)
+    if len(ow) < 3:
+        return False
+    inter = len(ow & cw)
+    return inter >= max(3, int(0.2 * len(ow)))
+
+
+def _question_overlaps_context(question: str, context: str, *, min_shared: int = 3) -> bool:
+    qwl = _words(question)
+    cwl = _words(context)
+    if len(qwl & cwl) >= min_shared:
+        return True
+    qn = " ".join(question.lower().split())[:200]
+    return len(qn) >= 24 and qn in context.lower()
 
 
 def _wrong_claims_from_sentence(s: str, topic: str) -> list[str]:
@@ -183,12 +204,17 @@ def _fallback_context_sentence_quiz(topic: str, idx: int, context_text: str) -> 
         options[slot] = o
 
     n = idx + 1
+    stems = (
+        "[{n}] According to the lesson, which statement best matches «{t}»?",
+        "[{n}] Which line from the text is most directly about «{t}»?",
+        "[{n}] Based only on the passage, which choice aligns best with «{t}»?",
+        "[{n}] The lesson includes several ideas. Which option is most relevant to «{t}»?",
+    )
+    tlab = topic.strip() or "this topic"
+    stem = stems[idx % len(stems)].format(n=n, t=tlab)
     return QuizQuestion(
         id=f"q{n}",
-        question=(
-            f"[{n}] According to the lesson text you provided, which statement is most closely about "
-            f"«{topic.strip() or 'this topic'}»?"
-        ),
+        question=stem,
         options=options,
         correct_option_index=correct_idx,
         correct_explanation="This line matches the lesson and fits the topic best among the choices.",
@@ -286,7 +312,24 @@ def _question_needs_fallback(q: QuizQuestion, context_text: str | None) -> bool:
         return True
     if any(re.match(r"^option\s*\d+\s*$", o, re.I) for o in opts):
         return True
-    if ctx and not all(_option_grounded(o, ctx) for o in opts):
+    if not ctx:
+        return False
+
+    hard = sum(1 for o in opts if _option_grounded(o, ctx))
+    soft = sum(1 for o in opts if _option_soft_overlap(o, ctx))
+    q_ok = _question_overlaps_context(q.question, ctx, min_shared=3)
+
+    # Requiring all four options to match the text literally rejected good paraphrases and
+    # forced the same template question repeatedly (only options changed).
+    if hard >= 2:
+        return False
+    if hard >= 1 and q_ok:
+        return False
+    if soft >= 3 and q_ok:
+        return False
+    if soft >= 2 and hard >= 1:
+        return False
+    if hard == 0 and soft <= 1:
         return True
     return False
 

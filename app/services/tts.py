@@ -258,3 +258,25 @@ async def synthesize_speech(
 async def get_audio_file(audio_id: str) -> tuple[bytes, str, str] | None:
     async with _lock:
         return _audio_store.get(audio_id)
+
+
+async def synthesize_segment_mp3(
+    text: str,
+    *,
+    stack: str,
+    output_language: OutputLanguage,
+    openai_voice: str = "nova",
+    openai_tts_model: str = "tts-1",
+    edge_voice: str | None = None,
+) -> bytes:
+    """Short narration for one video segment (no audio store id). Expect text already in target language."""
+    cleaned = _strip_for_speech(text)
+    if len(cleaned) < 4:
+        cleaned = text.strip()[:4000]
+    use_openai = stack.lower().strip() == "openai"
+    if use_openai:
+        chunk, _ = _truncate(cleaned, _MAX_OPENAI)
+        return await _openai_speech(chunk, voice=openai_voice, model=openai_tts_model)
+    chunk, _ = _truncate(cleaned, _MAX_EDGE)
+    v = _edge_voice_for_language(output_language, edge_voice)
+    return await _edge_speech(chunk, v)

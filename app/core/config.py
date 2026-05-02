@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # Optional local open-source image model server (AUTOMATIC1111 / SD WebUI)
     sd_webui_url: str = "http://127.0.0.1:7860"
 
+    # Optional: stock photos in generated slide decks (https://www.pexels.com/api/)
+    pexels_api_key: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

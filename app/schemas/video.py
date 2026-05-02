@@ -5,7 +5,13 @@ from pydantic import BaseModel, Field
 
 class VideoJobCreateRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=32000)
-    stack: str = Field(default="openai", description="openai | opensource")
+    stack: str = Field(
+        default="openai",
+        description=(
+            "openai | opensource | pexels | lesson_overview "
+            "(narrated explainer MP4 from source text; Notebook LM–style)"
+        ),
+    )
     seconds: Literal["4", "8", "12"] = "4"
     model: str = Field(default="sora-2", description="e.g. sora-2, sora-2-pro")
     size: str | None = Field(
@@ -32,6 +38,27 @@ class VideoJobCreateRequest(BaseModel):
             "Open-source local MP4 only: classic = lightweight gradient + sketch; "
             "motion_plus = higher fps, Ken Burns-style framing, smoother line transitions."
         ),
+    )
+    lesson_source_text: str | None = Field(
+        default=None,
+        max_length=32000,
+        description="For stack=lesson_overview: full chapter / lesson text to narrate (ground truth for the script).",
+    )
+    lesson_overview_style: Literal["explainer", "brief"] = Field(
+        default="explainer",
+        description="explainer ≈ more segments; brief = shorter overview.",
+    )
+    output_language: Literal["english", "hindi", "roman_hindi"] = Field(
+        default="english",
+        description="Spoken + on-screen language for lesson_overview.",
+    )
+    lesson_use_pexels_background: bool = Field(
+        default=False,
+        description="If true and PEXELS_API_KEY is set, each segment uses a stock photo under text.",
+    )
+    lesson_llm_stack: Literal["openai", "opensource"] = Field(
+        default="opensource",
+        description="Which stack runs script generation + TTS for lesson_overview (matches app Model stack).",
     )
 
 

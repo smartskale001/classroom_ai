@@ -52,7 +52,19 @@ class ExplainResponse(BaseModel):
         default=None,
         description="Valid Mermaid source to render a diagram in the UI (flowchart/graph).",
     )
+    diagram_caption: str | None = Field(
+        default=None,
+        description="Short legend: what the diagram shows, label meanings, or how to read it (same language as lesson).",
+    )
     output_language_used: Literal["english", "hindi", "roman_hindi"] | None = Field(
         default=None,
         description="Echo of the language the server applied (verify your selection reached the API).",
+    )
+    pdf_extraction_notes: str | None = Field(
+        default=None,
+        description="When explain came from a PDF upload: short summary (pages, tables, OCR).",
+    )
+    source_text_used_for_context: str | None = Field(
+        default=None,
+        description="Raw extracted PDF text echoed for client-side quiz/slides context (same as sent to the LLM).",
     )

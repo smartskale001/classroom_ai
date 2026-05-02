@@ -123,3 +123,39 @@ async def explain_images(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"LLM request failed: {e!s}") from e
+
+
+def _form_bool(raw: str) -> bool:
+    return str(raw).lower() in ("true", "1", "yes", "on")
+
+
+@router.post("/pdf", response_model=ExplainResponse)
+async def explain_pdf(
+    file: Annotated[UploadFile, File(description="PDF chapter or textbook excerpt")],
+    output_language: str = Form("english"),
+    topic_hint: str | None = Form(None),
+    stack: ModelStack = Form("openai"),
+    ocr_pages: str = Form("true"),
+    ocr_images: str = Form("true"),
+) -> ExplainResponse:
+    """Extract text page-by-page (tables + optional OCR), then explain using that context."""
+    if not file.filename or not str(file.filename).lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Upload a single .pdf file.")
+    data = await file.read()
+    if not data or len(data) > 40 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="PDF is empty or too large (max 40 MB).")
+
+    lang = normalize_output_language(output_language)
+    try:
+        return await explanation_service.explain_from_pdf_bytes(
+            data,
+            output_language=lang,
+            topic_hint=(topic_hint or "").strip() or None,
+            llm_provider=_to_llm_provider(stack),
+            ocr_pages=_form_bool(ocr_pages),
+            ocr_images=_form_bool(ocr_images),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"PDF explain failed: {e!s}") from e

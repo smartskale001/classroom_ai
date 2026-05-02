@@ -7,6 +7,14 @@ class SlideItem(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     bullets: list[str] = Field(default_factory=list, max_length=10)
     speaker_notes: str | None = Field(default=None, max_length=4000)
+    image_query: str | None = Field(
+        default=None,
+        description="English keywords used to find a stock photo (when PEXELS_API_KEY is set).",
+    )
+    photo_attribution: str | None = Field(
+        default=None,
+        description="Credit line for the slide image, if one was embedded.",
+    )
 
 
 class SlideDeckGenerateRequest(BaseModel):
