@@ -4,7 +4,54 @@
   padding: 1.5rem 1.25rem 3rem;
 }
 
-.app h1 {
+/* Logo on top left; title + blurb in a full-width panel below (not side-by-side) */
+.app-header {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.85rem;
+  margin-bottom: 1.25rem;
+}
+
+/* Full-width band so the logo scales across the whole content column */
+.app-brand-logo-wrap {
+  width: 100%;
+  max-width: 100%;
+  min-height: 140px;
+  max-height: min(300px, 44vh);
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-sizing: border-box;
+}
+
+.app-brand-logo {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: min(260px, 40vh);
+  object-fit: contain;
+  object-position: left center;
+  image-rendering: auto;
+}
+
+.app-header-main {
+  width: 100%;
+}
+
+.app-header-panel {
+  padding: 1rem 1.15rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.app-header-main h1 {
   font-size: 1.5rem;
   font-weight: 600;
   margin: 0 0 0.25rem;
@@ -15,6 +62,29 @@
   color: var(--muted);
   font-size: 0.95rem;
   margin: 0 0 1.5rem;
+}
+
+.app-header-main .sub {
+  margin-bottom: 0;
+}
+
+.app-lang-hint {
+  margin: -0.25rem 0 1.25rem;
+}
+
+.explanation-lang-badge {
+  margin: 0 0 0.75rem;
+}
+
+.diagram-legend {
+  margin: 0.5rem 0 0;
+  max-width: 100%;
+}
+
+.slide-photo-credit {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 0.65rem 0 0;
 }
 
 .tabs {
@@ -309,17 +379,20 @@ label.field textarea {
 }
 
 .slide-frame {
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 14px;
   overflow: hidden;
   background: var(--surface);
+  box-shadow: 0 12px 40px color-mix(in srgb, #000 35%, transparent);
 }
 
 .slide-screen {
   aspect-ratio: 16 / 9;
   min-height: 220px;
   padding: 1.75rem 2rem;
-  background: linear-gradient(155deg, #1a2332 0%, #0d1117 55%, #111827 100%);
+  background:
+    radial-gradient(120% 80% at 100% 0%, rgba(56, 189, 248, 0.12) 0%, transparent 55%),
+    linear-gradient(165deg, #121a2e 0%, #0b1020 50%, #0f172a 100%);
   color: #f1f5f9;
   display: flex;
   flex-direction: column;

@@ -1,40 +1,36 @@
 :root {
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --text: #1a1d26;
-  --muted: #5c6478;
-  --border: #d8dde8;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --danger: #b91c1c;
+  /* Black-based UI (always — not tied to OS theme) */
+  --bg: #000000;
+  --surface: #141416;
+  --text: #f4f4f5;
+  --muted: #a1a1aa;
+  --border: #27272a;
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --danger: #f87171;
   --radius: 10px;
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   line-height: 1.5;
   color: var(--text);
   background: var(--bg);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1117;
-    --surface: #181b24;
-    --text: #e8eaef;
-    --muted: #9aa3b5;
-    --border: #2a3040;
-    --accent: #60a5fa;
-    --accent-hover: #93c5fd;
-    --danger: #f87171;
-  }
+  color-scheme: dark;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  background: var(--bg);
+}
+
 body {
   margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
 }
 
 #root {
   min-height: 100vh;
+  background: var(--bg);
 }

@@ -14,11 +14,21 @@ export type ExplainResponse = {
   suggested_followup_topics: string[]
   video_lesson_prompt: string | null
   mermaid_diagram: string | null
+  /** Legend / how to read the diagram (same language as lesson). */
+  diagram_caption?: string | null
   output_language_used: OutputLanguageCode | null
+  pdf_extraction_notes?: string | null
+  /** Raw PDF extraction echoed for quiz/slides when using PDF mode */
+  source_text_used_for_context?: string | null
 }
 
 export type OutputLanguageCode = 'english' | 'hindi' | 'roman_hindi'
 export type ModelStack = 'openai' | 'opensource'
+
+/** Video tab only: Pexels = stock footage; lesson_overview = narrated explainer from your text (Notebook LM–style). */
+export type VideoJobStack = ModelStack | 'pexels' | 'lesson_overview'
+
+export type LessonOverviewStyle = 'explainer' | 'brief'
 
 export const OUTPUT_LANGUAGE_LABELS: Record<OutputLanguageCode, string> = {
   english: 'English',
@@ -98,6 +108,27 @@ export async function explainFromImages(
   return res.json()
 }
 
+export async function explainFromPdf(
+  file: File,
+  outputLanguage: OutputLanguageCode,
+  topicHint: string,
+  stack: ModelStack,
+  ocrPages: boolean,
+  ocrImages: boolean,
+): Promise<ExplainResponse> {
+  const fd = new FormData()
+  fd.set('file', file)
+  fd.set('output_language', outputLanguage)
+  if (topicHint.trim()) fd.set('topic_hint', topicHint.trim())
+  fd.set('stack', stack)
+  fd.set('ocr_pages', ocrPages ? 'true' : 'false')
+  fd.set('ocr_images', ocrImages ? 'true' : 'false')
+
+  const res = await fetch(`${API}/explain/pdf`, { method: 'POST', body: fd })
+  if (!res.ok) throw new Error(await readError(res))
+  return res.json()
+}
+
 export type OpensourceAnimationPreset = 'classic' | 'motion_plus'
 
 export async function createVideoJob(body: {
@@ -108,9 +139,16 @@ export async function createVideoJob(body: {
   input_reference_image_url: string | null
   /** Above 12: server runs create(12s) + extend segments (~30 → ~32s total). */
   chain_target_seconds?: number | null
-  stack: ModelStack
+  stack: VideoJobStack
   /** Open-source local MP4 only. */
   opensource_animation?: OpensourceAnimationPreset | null
+  /** lesson_overview: full text to turn into a narrated explainer video */
+  lesson_source_text?: string | null
+  lesson_overview_style?: LessonOverviewStyle
+  output_language?: OutputLanguageCode
+  lesson_use_pexels_background?: boolean
+  /** Same as Learn Model stack — LLM + TTS for lesson overview */
+  lesson_llm_stack?: ModelStack
 }): Promise<VideoJob> {
   const res = await fetch(`${API}/video/jobs`, {
     method: 'POST',
@@ -142,11 +180,15 @@ export function fileToDataUrl(file: File): Promise<string> {
   })
 }
 
-export async function generateIllustration(prompt: string, stack: ModelStack): Promise<string> {
+export async function generateIllustration(
+  prompt: string,
+  stack: ModelStack,
+  source: 'ai' | 'pexels' = 'ai',
+): Promise<string> {
   const res = await fetch(`${API}/illustration`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, stack }),
+    body: JSON.stringify({ prompt, stack, source }),
   })
   if (!res.ok) throw new Error(await readError(res))
   const j = (await res.json()) as { image_base64: string; mime_type: string }
@@ -175,6 +217,8 @@ export type SlideItem = {
   title: string
   bullets: string[]
   speaker_notes?: string | null
+  image_query?: string | null
+  photo_attribution?: string | null
 }
 
 export type SlideDeckResponse = {

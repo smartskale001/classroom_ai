@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import {
   createVideoJob,
   explainFromImages,
+  explainFromPdf,
   explainFromText,
   fetchSlideDeckBlob,
   fetchVideoBlob,
@@ -16,6 +17,7 @@ import {
   generateInfographic,
   fetchSpeechBlob,
   getVideoJob,
+  OUTPUT_LANGUAGE_LABELS,
   type ExplainResponse,
   type FlashcardsResponse,
   type ModelStack,
@@ -25,11 +27,13 @@ import {
   type SpeechResponse,
   type OpensourceAnimationPreset,
   type VideoJob,
+  type VideoJobStack,
+  type LessonOverviewStyle,
 } from './api'
 import { MermaidDiagram } from './MermaidDiagram'
 import './App.css'
 
-type Mode = 'text' | 'images'
+type Mode = 'text' | 'images' | 'pdf'
 type MainTab = 'learn' | 'video' | 'quiz' | 'slides' | 'flashcards' | 'infographic' | 'listen'
 
 /** Fenced ```mermaid in explanation_markdown — render with the same pipeline as `mermaid_diagram`. */
@@ -66,6 +70,9 @@ function App() {
   const [topicHint, setTopicHint] = useState('')
   const [chapterText, setChapterText] = useState('')
   const [files, setFiles] = useState<File[]>([])
+  const [pdfFile, setPdfFile] = useState<File | null>(null)
+  const [pdfOcrPages, setPdfOcrPages] = useState(true)
+  const [pdfOcrImages, setPdfOcrImages] = useState(true)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -111,6 +118,11 @@ function App() {
   const [clipLength, setClipLength] = useState<'4' | '8' | '12' | 'approx30'>('4')
   const [vModel, setVModel] = useState('sora-2')
   const [opensourceAnimation, setOpensourceAnimation] = useState<OpensourceAnimationPreset>('motion_plus')
+  /** Video tab only — does not change the Learn/quiz model stack. */
+  const [videoSource, setVideoSource] = useState<VideoJobStack>('opensource')
+  const [lessonOverviewText, setLessonOverviewText] = useState('')
+  const [lessonOverviewStyle, setLessonOverviewStyle] = useState<LessonOverviewStyle>('explainer')
+  const [lessonPexelsBg, setLessonPexelsBg] = useState(false)
   const [vSize] = useState<string>('')
   const [, setVideoJob] = useState<VideoJob | null>(null)
   const [videoBusy, setVideoBusy] = useState(false)
@@ -120,6 +132,7 @@ function App() {
   const [illustrationSrc, setIllustrationSrc] = useState<string | null>(null)
   const [illustrationBusy, setIllustrationBusy] = useState(false)
   const [illustrationErr, setIllustrationErr] = useState<string | null>(null)
+  const [illustrationUsePexels, setIllustrationUsePexels] = useState(false)
 
   const [pipelineStatus, setPipelineStatus] = useState<string | null>(null)
 
@@ -141,30 +154,41 @@ function App() {
   }, [stopPoll, videoUrl, audioUrl])
 
   useEffect(() => {
-    if (stack === 'opensource') {
+    if (videoSource === 'opensource') {
       setVModel(opensourceAnimation === 'motion_plus' ? 'opensource-local-motion-plus' : 'opensource-local-animation')
-    } else {
-      setVModel('sora-2')
+    } else if (videoSource === 'pexels') {
+      setVModel('pexels-stock-video')
+    } else if (videoSource === 'lesson_overview') {
+      setVModel('lesson-overview-explainer')
+    } else if (videoSource === 'openai') {
+      setVModel((prev) => (prev === 'sora-2' || prev === 'sora-2-pro' ? prev : 'sora-2'))
     }
-  }, [stack, opensourceAnimation])
+  }, [videoSource, opensourceAnimation])
 
+  /** Quiz / slides / etc.: send both source chapter (if any) and the generated lesson so the LLM is grounded in what you provided. */
   const getLessonContextFromExplain = (explain: ExplainResponse | null): string | null => {
-    if (mode === 'text' && chapterText.trim()) {
-      return chapterText.trim()
+    const chunks: string[] = []
+    if ((mode === 'text' || mode === 'pdf') && chapterText.trim()) {
+      chunks.push(chapterText.trim())
     }
-    if (!explain) return null
-    const parts = [
-      explain.explanation_markdown?.trim(),
-      ...(explain.simple_examples || []).map((s) => String(s).trim()).filter(Boolean),
-      ...(explain.visual_briefs || []).map((b) => `${b.title}. ${b.description}`.trim()),
-    ].filter(Boolean) as string[]
-    const merged = parts.join('\n\n').trim()
+    if (explain) {
+      const parts = [
+        explain.explanation_markdown?.trim(),
+        ...(explain.simple_examples || []).map((s) => String(s).trim()).filter(Boolean),
+        ...(explain.visual_briefs || []).map((b) => `${b.title}. ${b.description}`.trim()),
+      ].filter(Boolean) as string[]
+      if (parts.length > 0) {
+        chunks.push(parts.join('\n\n'))
+      }
+    }
+    const merged = chunks.join('\n\n---\n\n').trim()
     return merged.length > 0 ? merged : null
   }
 
   const derivedQuizTopic =
     topicHint.trim() ||
     (mode === 'text' && chapterText.trim() ? chapterText.trim().split('\n')[0].slice(0, 120) : '') ||
+    (mode === 'pdf' && pdfFile ? pdfFile.name.replace(/\.pdf$/i, '').slice(0, 120) : '') ||
     'Current chapter topic'
 
   const derivedQuizContext = getLessonContextFromExplain(result)
@@ -327,6 +351,11 @@ function App() {
         setError('Paste some chapter text first.')
         return
       }
+    } else if (mode === 'pdf') {
+      if (!pdfFile) {
+        setError('Choose a PDF file first.')
+        return
+      }
     } else if (files.length === 0) {
       setError('Choose one or more screenshots.')
       return
@@ -335,6 +364,7 @@ function App() {
     const topic =
       topicHint.trim() ||
       (mode === 'text' && chapterText.trim() ? chapterText.trim().split('\n')[0].slice(0, 120) : '') ||
+      (mode === 'pdf' && pdfFile ? pdfFile.name.replace(/\.pdf$/i, '').slice(0, 120) : '') ||
       'Current chapter topic'
 
     setLoading(true)
@@ -343,6 +373,11 @@ function App() {
       let data: ExplainResponse
       if (mode === 'text') {
         data = await explainFromText(chapterText, outputLanguage, topicHint, stack)
+      } else if (mode === 'pdf') {
+        if (!pdfFile) throw new Error('No PDF file.')
+        data = await explainFromPdf(pdfFile, outputLanguage, topicHint, stack, pdfOcrPages, pdfOcrImages)
+        const extracted = data.source_text_used_for_context?.trim()
+        if (extracted) setChapterText(extracted)
       } else {
         data = await explainFromImages(files, outputLanguage, topicHint, stack)
       }
@@ -483,7 +518,14 @@ function App() {
 
   const startVideo = async () => {
     setVideoErr(null)
-    if (!videoPrompt.trim()) {
+    if (videoSource === 'lesson_overview') {
+      if (lessonOverviewText.trim().length < 120) {
+        setVideoErr(
+          'Lesson overview needs at least 120 characters of source text. Paste a chapter or click Fill from lesson.',
+        )
+        return
+      }
+    } else if (!videoPrompt.trim()) {
       setVideoErr('Add an animation prompt (short sentences separated by periods work best).')
       return
     }
@@ -494,18 +536,35 @@ function App() {
     }
     try {
       let refUrl: string | null = null
-      if (useRefImage && mode === 'images' && files.length > 0) {
+      if (videoSource === 'openai' && useRefImage && mode === 'images' && files.length > 0) {
         refUrl = await fileToDataUrl(files[0])
       }
       const job = await createVideoJob({
-        prompt: videoPrompt.trim(),
+        prompt:
+          videoSource === 'lesson_overview'
+            ? lessonOverviewText.trim().slice(0, 400) || 'Lesson overview'
+            : videoPrompt.trim(),
         seconds: clipLength === 'approx30' ? '12' : clipLength,
         model: vModel,
         size: vSize.trim() || null,
-        input_reference_image_url: refUrl,
-        chain_target_seconds: clipLength === 'approx30' ? 30 : null,
-        stack,
-        opensource_animation: stack === 'opensource' ? opensourceAnimation : null,
+        input_reference_image_url: videoSource === 'openai' ? refUrl : null,
+        chain_target_seconds:
+          videoSource === 'pexels' || videoSource === 'lesson_overview'
+            ? null
+            : clipLength === 'approx30'
+              ? 30
+              : null,
+        stack: videoSource,
+        opensource_animation: videoSource === 'opensource' ? opensourceAnimation : null,
+        ...(videoSource === 'lesson_overview'
+          ? {
+              lesson_source_text: lessonOverviewText.trim(),
+              lesson_overview_style: lessonOverviewStyle,
+              output_language: outputLanguage,
+              lesson_use_pexels_background: lessonPexelsBg,
+              lesson_llm_stack: stack,
+            }
+          : {}),
       })
       setVideoJob(job)
       stopPoll()
@@ -533,7 +592,7 @@ function App() {
       }
 
       await tick()
-      pollRef.current = setInterval(tick, 4000)
+      pollRef.current = setInterval(tick, job.id.startsWith('lovid_') ? 6000 : 4000)
     } catch (e) {
       setVideoBusy(false)
       setVideoErr(e instanceof Error ? e.message : String(e))
@@ -547,7 +606,7 @@ function App() {
     setIllustrationErr(null)
     setIllustrationBusy(true)
     try {
-      const src = await generateIllustration(prompt, stack)
+      const src = await generateIllustration(prompt, stack, illustrationUsePexels ? 'pexels' : 'ai')
       setIllustrationSrc(src)
     } catch (e) {
       setIllustrationErr(e instanceof Error ? e.message : String(e))
@@ -558,12 +617,19 @@ function App() {
 
   return (
     <div className="app">
-      <h1>ClassroomAI</h1>
-      <p className="sub">
-        On Learn, Generate explanation builds the lesson, then runs quiz, slides, flashcards, infographic, and audio one
-        after another (not video — use the Video tab for that). Each tab still has its own Generate if you want to redo
-        one piece.
-      </p>
+      <header className="app-header">
+        <div className="app-brand-logo-wrap">
+          <img className="app-brand-logo" src="/smartskale.png" alt="SmartSkale" />
+        </div>
+        <div className="app-header-main app-header-panel">
+          <h1>ClassroomAI</h1>
+          <p className="sub">
+            On Learn, Generate explanation builds the lesson, then runs quiz, slides, flashcards, infographic, and audio
+            one after another (not video — use the Video tab for that). Each tab still has its own Generate if you want
+            to redo one piece.
+          </p>
+        </div>
+      </header>
 
       <div className="tabs">
         <button type="button" className={mainTab === 'learn' ? 'active' : ''} onClick={() => setMainTab('learn')}>
@@ -610,6 +676,10 @@ function App() {
           </select>
         </label>
       </div>
+      <p className="hint app-lang-hint">
+        All explanations, examples, and downstream content (quiz, slides, audio, etc.) are produced in{' '}
+        <strong>{OUTPUT_LANGUAGE_LABELS[outputLanguage]}</strong>. Choose the language before you generate.
+      </p>
 
       {mainTab === 'learn' && (
         <>
@@ -619,6 +689,9 @@ function App() {
             </button>
             <button type="button" className={mode === 'images' ? 'active' : ''} onClick={() => setMode('images')}>
               Screenshots
+            </button>
+            <button type="button" className={mode === 'pdf' ? 'active' : ''} onClick={() => setMode('pdf')}>
+              PDF chapter
             </button>
           </div>
 
@@ -630,8 +703,37 @@ function App() {
             {mode === 'text' ? (
               <label className="field">
                 Chapter text
-                <textarea value={chapterText} onChange={(e) => setChapterText(e.target.value)} placeholder="Paste the full chapter or section…" />
+                <textarea
+                  value={chapterText}
+                  onChange={(e) => setChapterText(e.target.value)}
+                  placeholder={`Paste chapter text here. The explanation will be structured with headings, concrete examples, and ${OUTPUT_LANGUAGE_LABELS[outputLanguage]} throughout.`}
+                />
               </label>
+            ) : mode === 'pdf' ? (
+              <>
+                <label className="field">
+                  PDF document
+                  <input
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    onChange={(e) => setPdfFile(e.target.files?.[0] ?? null)}
+                  />
+                </label>
+                <div className="row" style={{ flexWrap: 'wrap', gap: '1rem', alignItems: 'center' }}>
+                  <label className="row" style={{ gap: '0.4rem', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={pdfOcrPages} onChange={(e) => setPdfOcrPages(e.target.checked)} />
+                    <span className="hint">OCR scanned / sparse pages (needs Tesseract on server)</span>
+                  </label>
+                  <label className="row" style={{ gap: '0.4rem', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={pdfOcrImages} onChange={(e) => setPdfOcrImages(e.target.checked)} />
+                    <span className="hint">OCR text inside embedded images</span>
+                  </label>
+                </div>
+                <p className="hint">
+                  The server extracts text page-by-page, tables, and optional OCR, then runs the same explanation pipeline.
+                  After generation, extracted text is copied into memory for quiz/slides context. Max 100 pages / 40 MB.
+                </p>
+              </>
             ) : (
               <label className="field">
                 Screenshots (multiple)
@@ -648,6 +750,16 @@ function App() {
           {result && (
             <section className="panel">
               <h2>Explanation</h2>
+              {result.output_language_used && (
+                <p className="hint explanation-lang-badge">
+                  Written in: {OUTPUT_LANGUAGE_LABELS[result.output_language_used]}
+                </p>
+              )}
+              {result.pdf_extraction_notes?.trim() ? (
+                <p className="hint" style={{ marginTop: '0.35rem' }}>
+                  PDF extraction: {result.pdf_extraction_notes}
+                </p>
+              ) : null}
               <div className="md">
                 <ReactMarkdown components={{ pre: MarkdownPre }}>{result.explanation_markdown}</ReactMarkdown>
               </div>
@@ -656,12 +768,15 @@ function App() {
                 <>
                   <h2 style={{ marginTop: '1.25rem' }}>Diagram</h2>
                   <div className="diagram-box"><MermaidDiagram code={result.mermaid_diagram} /></div>
+                  {result.diagram_caption?.trim() ? (
+                    <p className="hint diagram-legend">{result.diagram_caption.trim()}</p>
+                  ) : null}
                 </>
               )}
 
               {result.simple_examples.length > 0 && (
                 <>
-                  <h2 style={{ marginTop: '1.25rem' }}>Simple examples</h2>
+                  <h2 style={{ marginTop: '1.25rem' }}>Concrete examples</h2>
                   <ul className="examples">{result.simple_examples.map((ex, i) => <li key={i}>{ex}</li>)}</ul>
                 </>
               )}
@@ -674,13 +789,32 @@ function App() {
                       <div className="brief" key={i}><span className="brief-badge">{briefKindLabel(b)}</span><strong>{b.title}</strong><div>{b.description}</div></div>
                     ))}
                   </div>
-                  <div className="row" style={{ marginTop: '0.75rem' }}>
+                  <div className="row" style={{ marginTop: '0.75rem', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center' }}>
+                    <label className="row" style={{ gap: '0.4rem', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={illustrationUsePexels}
+                        onChange={(e) => setIllustrationUsePexels(e.target.checked)}
+                      />
+                      <span className="hint">Stock photo (Pexels)</span>
+                    </label>
                     <button type="button" className="secondary" disabled={illustrationBusy || loading} onClick={runIllustration}>
-                      {illustrationBusy ? 'Drawing…' : 'AI illustration'}
+                      {illustrationBusy ? (illustrationUsePexels ? 'Loading…' : 'Drawing…') : illustrationUsePexels ? 'Stock illustration' : 'AI illustration'}
                     </button>
                   </div>
+                  {illustrationUsePexels && (
+                    <p className="hint" style={{ marginTop: '0.35rem' }}>
+                      Uses your first visual brief as search keywords. Needs <code>PEXELS_API_KEY</code> on the server.
+                    </p>
+                  )}
                   {illustrationErr && <p className="err">{illustrationErr}</p>}
-                  {illustrationSrc && <img className="illustration-img" src={illustrationSrc} alt="Generated illustration" />}
+                  {illustrationSrc && (
+                    <img
+                      className="illustration-img"
+                      src={illustrationSrc}
+                      alt={illustrationUsePexels ? 'Pexels stock photo' : 'Generated illustration'}
+                    />
+                  )}
                 </>
               )}
             </section>
@@ -692,39 +826,108 @@ function App() {
         <section className="panel video-area">
           <h2>Short video clip</h2>
           <p className="hint">
-            Generate explanation on Learn does not create video — use Generate clip here. Type your own animation prompt
-            (short factual sentences separated by periods). Other lesson outputs are filled automatically from Learn; you
-            can still regenerate them from their tabs.
-            {mode === 'images' && files.length > 0 && (
+            Generate explanation on Learn does not create video — use Generate clip here. Choose a clip source below.
+            <strong> Lesson overview</strong> builds a narrated multi-slide MP4 from your text (similar in spirit to
+            Notebook LM video overviews: script + voice + visuals — not Google&apos;s proprietary pipeline). For{' '}
+            <strong>Pexels</strong>, use short search-style keywords. For local or Sora, short factual sentences work well.
+            {videoSource === 'openai' && mode === 'images' && files.length > 0 && (
               <>
                 {' '}
-                With Screenshots mode and files selected on Learn, OpenAI video can use your first screenshot as a
-                reference when you generate.
+                With Screenshots mode and files on Learn, Sora can use your first screenshot as a reference.
               </>
             )}
           </p>
           <label className="field" style={{ marginTop: '0.75rem' }}>
-            Animation prompt
-            <textarea value={videoPrompt} onChange={(e) => setVideoPrompt(e.target.value)} rows={6} placeholder="e.g. Chloroplasts trap sunlight. Water splits. CO2 becomes sugar. Oxygen is released." />
+            Clip source
+            <select
+              value={videoSource}
+              onChange={(e) => setVideoSource(e.target.value as VideoJobStack)}
+            >
+              <option value="opensource">Local animation (no API credits)</option>
+              <option value="openai">OpenAI Sora (generative)</option>
+              <option value="pexels">Pexels stock video (needs PEXELS_API_KEY)</option>
+              <option value="lesson_overview">Lesson overview (narrated explainer from your text)</option>
+            </select>
           </label>
-          <div className="row" style={{ marginTop: '0.75rem' }}>
-            <label className="field" style={{ minWidth: '200px' }}>
-              Length
-              <select value={clipLength} onChange={(e) => setClipLength(e.target.value as '4' | '8' | '12' | 'approx30')}>
-                <option value="4">4s</option>
-                <option value="8">8s</option>
-                <option value="12">12s</option>
-                <option value="approx30">~30s</option>
-              </select>
+          {videoSource === 'lesson_overview' ? (
+            <>
+              <div className="row" style={{ marginTop: '0.75rem', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-end' }}>
+                <label className="field" style={{ minWidth: '200px' }}>
+                  Overview style
+                  <select
+                    value={lessonOverviewStyle}
+                    onChange={(e) => setLessonOverviewStyle(e.target.value as LessonOverviewStyle)}
+                  >
+                    <option value="explainer">Explainer (~6 segments)</option>
+                    <option value="brief">Brief (~4 segments)</option>
+                  </select>
+                </label>
+                <label className="row" style={{ gap: '0.4rem', cursor: 'pointer', alignItems: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={lessonPexelsBg}
+                    onChange={(e) => setLessonPexelsBg(e.target.checked)}
+                  />
+                  <span className="hint">Stock image backgrounds (Pexels)</span>
+                </label>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!derivedQuizContext}
+                  onClick={() => derivedQuizContext && setLessonOverviewText(derivedQuizContext)}
+                >
+                  Fill from lesson
+                </button>
+              </div>
+              <label className="field" style={{ marginTop: '0.75rem' }}>
+                Source text (chapter, notes, or pasted explanation — min. 120 characters)
+                <textarea
+                  value={lessonOverviewText}
+                  onChange={(e) => setLessonOverviewText(e.target.value)}
+                  rows={14}
+                  placeholder="Paste the material you want turned into a narrated overview video. After running Generate explanation on Learn, use Fill from lesson to pull chapter + explanation."
+                />
+              </label>
+            </>
+          ) : (
+            <label className="field" style={{ marginTop: '0.75rem' }}>
+              {videoSource === 'pexels' ? 'Search keywords' : 'Animation prompt'}
+              <textarea
+                value={videoPrompt}
+                onChange={(e) => setVideoPrompt(e.target.value)}
+                rows={6}
+                placeholder={
+                  videoSource === 'pexels'
+                    ? 'e.g. plant cell, science lab, teacher explaining'
+                    : 'e.g. Chloroplasts trap sunlight. Water splits. CO2 becomes sugar. Oxygen is released.'
+                }
+              />
             </label>
+          )}
+          <div className="row" style={{ marginTop: '0.75rem' }}>
+            {videoSource !== 'pexels' && videoSource !== 'lesson_overview' && (
+              <label className="field" style={{ minWidth: '200px' }}>
+                Length
+                <select value={clipLength} onChange={(e) => setClipLength(e.target.value as '4' | '8' | '12' | 'approx30')}>
+                  <option value="4">4s</option>
+                  <option value="8">8s</option>
+                  <option value="12">12s</option>
+                  <option value="approx30">~30s</option>
+                </select>
+              </label>
+            )}
             <label className="field" style={{ minWidth: '220px' }}>
-              {stack === 'openai' ? 'Model' : 'Local animation'}
-              {stack === 'openai' ? (
+              {videoSource === 'openai' ? 'Model' : videoSource === 'opensource' ? 'Local animation' : ' '}
+              {videoSource === 'lesson_overview' ? (
+                <span className="hint" style={{ display: 'block', paddingTop: '0.35rem' }}>
+                  Uses Model stack + output language from the header
+                </span>
+              ) : videoSource === 'openai' ? (
                 <select value={vModel} onChange={(e) => setVModel(e.target.value)}>
                   <option value="sora-2">sora-2</option>
                   <option value="sora-2-pro">sora-2-pro</option>
                 </select>
-              ) : (
+              ) : videoSource === 'opensource' ? (
                 <select
                   value={opensourceAnimation}
                   onChange={(e) => setOpensourceAnimation(e.target.value as OpensourceAnimationPreset)}
@@ -732,16 +935,40 @@ function App() {
                   <option value="classic">Classic (lightweight)</option>
                   <option value="motion_plus">Motion+ (smoother, richer 2D)</option>
                 </select>
+              ) : (
+                <span className="hint" style={{ display: 'block', paddingTop: '0.35rem' }}>
+                  Original clip length from Pexels
+                </span>
               )}
             </label>
             <button type="button" className="primary" style={{ alignSelf: 'flex-end' }} disabled={videoBusy || loading} onClick={startVideo}>
-              {videoBusy ? 'Rendering…' : 'Generate clip'}
+              {videoBusy
+                ? videoSource === 'lesson_overview'
+                  ? 'Building overview…'
+                  : 'Rendering…'
+                : videoSource === 'lesson_overview'
+                  ? 'Build overview video'
+                  : 'Generate clip'}
             </button>
           </div>
-          {stack === 'opensource' && (
+          {videoSource === 'opensource' && (
             <p className="hint" style={{ marginTop: '0.5rem' }}>
               Local clips are 2D lesson-style animations. Motion+ adds smoother motion and framing; for photoreal
-              generative video, switch the stack to OpenAI (Sora).
+              generative video, choose OpenAI (Sora), or try Pexels for real stock footage.
+            </p>
+          )}
+          {videoSource === 'pexels' && (
+            <p className="hint" style={{ marginTop: '0.5rem' }}>
+              Returns one landscape stock clip from the Pexels catalog (not AI-generated). Follow Pexels license terms for
+              your use case. Requires <code>PEXELS_API_KEY</code> in server <code>.env</code>.
+            </p>
+          )}
+          {videoSource === 'lesson_overview' && (
+            <p className="hint" style={{ marginTop: '0.5rem' }}>
+              The server builds a script (via your LLM stack), narrates each segment with TTS, renders title slides, and
+              stitches an MP4. Generation can take several minutes. Optional Pexels backgrounds need{' '}
+              <code>PEXELS_API_KEY</code>. This is an open-source-style explainer, not Google Notebook LM&apos;s cinematic
+              pipeline.
             </p>
           )}
           {videoErr && <p className="err">{videoErr}</p>}
@@ -755,8 +982,9 @@ function App() {
           <div className="grid">
             <p className="hint">
               After you run Generate explanation on Learn, a quiz is created automatically. You can also regenerate here
-              with different difficulty or question count. Context: pasted chapter text in text mode, or the last
-              explanation in screenshots mode.
+              with different difficulty or question count. Questions are grounded in your lesson: in text mode we send both
+              your pasted chapter (or PDF extraction) and the generated explanation; in screenshots mode we use the
+              explanation (and related fields) from Learn.
               <br />
               Topic label: <strong>{derivedQuizTopic}</strong>
             </p>
@@ -860,7 +1088,9 @@ function App() {
           <h2>Slide deck</h2>
           <p className="hint">
             A deck is created automatically when you run Generate explanation on Learn. Regenerate here to change slide
-            count. Preview below, then download to edit in PowerPoint or Google Slides.
+            count. Decks use a dark cinematic layout (hero title slide + full-bleed backgrounds). Without Pexels, each
+            slide gets a generated gradient; with <code>PEXELS_API_KEY</code> in <code>.env</code>, slides use darkened
+            stock photos behind text. Preview below, then download to open in PowerPoint or Google Slides.
             <br />
             Topic: <strong>{derivedQuizTopic}</strong>
           </p>
@@ -900,6 +1130,9 @@ function App() {
                       <li key={i}>{b}</li>
                     ))}
                   </ul>
+                  {slideDeck.slides[slideIndex].photo_attribution ? (
+                    <p className="slide-photo-credit">{slideDeck.slides[slideIndex].photo_attribution}</p>
+                  ) : null}
                 </div>
                 {slideDeck.slides[slideIndex].speaker_notes ? (
                   <p className="slide-notes">

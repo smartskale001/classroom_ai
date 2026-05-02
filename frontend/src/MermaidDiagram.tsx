@@ -9,7 +9,7 @@ function ensureMermaidConfig() {
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: 'loose',
-    theme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default',
+    theme: 'dark',
   })
 }
 
@@ -69,14 +69,9 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-/** Mermaid 11 can return an SVG containing the bomb / "Syntax error" UI without throwing. */
+/** Mermaid's broken-diagram SVG always includes this phrase; avoid matching generic "error" in class names (false positives on valid charts). */
 function mermaidSvgIsErrorPlaceholder(svg: string): boolean {
-  return (
-    /Syntax error in text/i.test(svg) ||
-    /class="[^"]*error[^"]*"/i.test(svg) ||
-    /\berror-icon\b/i.test(svg) ||
-    /<text[^>]*>[\s\S]*Syntax error/i.test(svg)
-  )
+  return /Syntax error in text/i.test(svg)
 }
 
 export function MermaidDiagram({ code }: Props) {
@@ -100,6 +95,7 @@ export function MermaidDiagram({ code }: Props) {
       attempts.push(`flowchart TD\n${cleaned}`)
     }
     attempts.push(trivialFallback(cleaned))
+    attempts.push('flowchart LR\n  A["Key idea"]')
 
     const run = async () => {
       let lastErr: unknown = null
