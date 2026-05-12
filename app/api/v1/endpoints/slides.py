@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from fastapi import APIRouter, HTTPException, Response
 
 from app.schemas.language import normalize_output_language
@@ -33,8 +35,11 @@ async def download_slide_deck(deck_id: str) -> Response:
     if not data:
         raise HTTPException(status_code=404, detail="Slide deck not found or expired.")
     pptx_bytes, filename = data
+
+    # Fix: URL-encode filename to handle non-ASCII characters (Hindi, etc.)
+    encoded_filename = quote(filename)
     return Response(
         content=pptx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
     )
