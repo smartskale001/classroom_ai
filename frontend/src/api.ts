@@ -5,6 +5,8 @@ export type VisualBrief = {
   description: string
   kind: string
   suggested_format: string
+  mermaid_diagram?: string | null // Optional: subtopic diagram
+  src?: string | null // Optional: image URL or base64
 }
 
 export type ExplainResponse = {
@@ -337,4 +339,16 @@ export async function generateInfographic(body: {
   })
   if (!res.ok) throw new Error(await readError(res))
   return res.json()
+}
+
+import axios from 'axios';
+
+export async function fetchRelevantImages(text: string): Promise<string[]> {
+  try {
+    const response = await axios.post('/api/v1/explain/images', { text });
+    return response.data.images; // Assuming the API returns an array of image URLs
+  } catch (error) {
+    console.error('Error fetching relevant images:', error);
+    throw error;
+  }
 }

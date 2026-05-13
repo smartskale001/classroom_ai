@@ -3,8 +3,6 @@
 from typing import Literal, cast
 
 from openai import AsyncOpenAI
-from openai.types.video_seconds import VideoSeconds
-
 from app.core.config import Settings
 
 
@@ -19,7 +17,11 @@ def _video_client(settings: Settings) -> AsyncOpenAI:
     )
 
 
-def _extend_plan_for_target(total_seconds: int) -> list[Literal["4", "8", "12"]]:
+# Define VideoSeconds as a Literal type
+VideoSeconds = Literal["4", "8", "12"]
+
+
+def _extend_plan_for_target(total_seconds: int) -> list[VideoSeconds]:
     """
     `videos.create` is capped at 12s. Each `videos.extend` adds another 4/8/12s segment.
     There is no single API parameter for 30s — we chain segments to approximate the target.

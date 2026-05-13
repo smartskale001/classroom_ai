@@ -35,6 +35,14 @@ class VisualAssetBrief(BaseModel):
         default="svg_or_image",
         description="svg_or_image, mermaid, or animation_storyboard",
     )
+    src: str | None = Field(
+        default=None,
+        description="Optional rendered image asset for the brief, usually a data URL or public image URL.",
+    )
+    mermaid_diagram: str | None = Field(
+        default=None,
+        description="Optional Mermaid source for a brief-specific diagram.",
+    )
 
 
 class ExplainResponse(BaseModel):

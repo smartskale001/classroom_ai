@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # Optional: stock photos in generated slide decks (https://www.pexels.com/api/)
     pexels_api_key: str | None = None
 
+    # Image generation stability settings
+    image_generation_retries: int = 3
+    image_generation_retry_delay: float = 1.0  # Initial delay in seconds
+    sd_webui_seed: int = -1  # -1 for random, or specific seed for deterministic output
+    llm_prompt_generation_retries: int = 3
+
 
 @lru_cache
 def get_settings() -> Settings:

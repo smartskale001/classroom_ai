@@ -72,6 +72,10 @@
   margin: -0.25rem 0 1.25rem;
 }
 
+.learn-actions {
+  margin-top: 0.15rem;
+}
+
 .explanation-lang-badge {
   margin: 0 0 0.75rem;
 }
@@ -233,10 +237,44 @@ label.field textarea {
 }
 
 .brief {
-  padding: 0.65rem 0.75rem;
+  padding: 0.6rem 0.7rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 0.9rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 95%, white);
+}
+
+.asset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.asset-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface) 88%, white), var(--surface));
+  box-shadow: 0 10px 28px color-mix(in srgb, #000 10%, transparent);
+}
+
+.asset-card strong {
+  font-size: 1rem;
+}
+
+.asset-desc {
+  margin-top: 0;
+}
+
+.asset-img {
+  margin-top: 0.35rem;
+}
+
+.asset-diagram {
+  margin-top: 0.35rem;
 }
 
 .brief strong {
