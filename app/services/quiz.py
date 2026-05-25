@@ -9,6 +9,10 @@ from app.services.llm.factory import get_llm_provider
 from app.services.llm.types import Message
 
 
+# ---------------------------------------------------------------------------
+# Language helpers
+# ---------------------------------------------------------------------------
+
 def _lang_rule(lang: OutputLanguage) -> str:
     if lang == "english":
         return "All learner-facing text must be in English."
@@ -17,45 +21,170 @@ def _lang_rule(lang: OutputLanguage) -> str:
     return "All learner-facing text must be in Roman Hindi (Latin letters only, no Devanagari)."
 
 
-def _prompt(*, topic: str, difficulty: str, question_count: int, output_language: OutputLanguage, context_text: str | None) -> str:
+# ---------------------------------------------------------------------------
+# Main quiz-generation prompt
+# ---------------------------------------------------------------------------
+
+def _prompt(
+    *,
+    topic: str,
+    difficulty: str,
+    question_count: int,
+    output_language: OutputLanguage,
+    context_text: str | None,
+) -> str:
     context = (context_text or "").strip()
     ctx_excerpt = context[:26000]
+
     grounded = (
-        "\nCONTEXT-GROUNDING (mandatory when Context material is non-empty):\n"
-        "- Read the Context material carefully. Every question MUST test understanding of that text.\n"
-        "- ALL FOUR OPTIONS must be taken from the Context: either exact quotes, or a tight paraphrase "
-        "of a sentence/phrase that appears there. Do not invent facts that are not supported by the Context.\n"
-        "- WRONG answers must still be real statements from (or clearly implied by) the Context, but they must "
-        "NOT correctly answer the question (e.g. true facts about a different sub-point, or a misapplied formula).\n"
-        "- In option_explanations, briefly cite which part of the Context each option relates to.\n"
-        "- If the Context is too short to build four grounded options, say so by returning fewer questions "
-        "only if unavoidable; prefer quoting distinct lines from the Context.\n"
+        "\nCONTEXT-GROUNDING RULES:\n"
+        "- Every question MUST test conceptual understanding, NOT pattern-matching to sentence fragments.\n"
+        "- NEVER copy a sentence from the context as an answer option.\n"
+        "- Rewrite all answer options in your own words — short, clear, testable statements.\n"
+        "- The correct answer must be fully supported by the context.\n\n"
     )
+
+    no_context = (
+        "\nNO CONTEXT PROVIDED — USE GENERAL KNOWLEDGE:\n"
+        f"- Generate {question_count} high-quality questions about '{topic}' from your training knowledge.\n"
+        "- Questions must test real understanding — definitions, causes, comparisons, applications.\n\n"
+    )
+
+    distractor_rules = (
+        "DISTRACTOR QUALITY RULES (critical for educational value):\n"
+        "- Wrong options must be PLAUSIBLE to a student who hasn't studied well.\n"
+        "- Use these distractor strategies (vary them):\n"
+        "  1. COMMON MISCONCEPTION — a belief many students wrongly hold.\n"
+        "  2. PARTIALLY TRUE — mix a correct fact with an incorrect one.\n"
+        "  3. CONCEPT SWAP — replace a key term with a related-but-wrong term.\n"
+        "  4. CAUSE/EFFECT REVERSAL — flip the direction of a relationship.\n"
+        "  5. OVER-GENERALISATION — make a specific fact sound universally true.\n"
+        "  6. PLAUSIBLE NEIGHBOUR — use a fact from a closely related concept.\n"
+        "- NEVER write distractors that:\n"
+        "  * Are sentence fragments or partial copies of the context text\n"
+        "  * Only negate the correct answer ('X does NOT...')\n"
+        "  * Are obviously false ('The Sun is made of ice')\n"
+        "  * Are meta-labels ('This is incorrect', 'Option 1')\n"
+        "  * Change only a single word or add 'not' to the correct answer\n"
+        "- Every option must be a complete, grammatically correct statement.\n"
+        "- All 4 options must be similar in length and style.\n\n"
+    )
+
+    question_rules = (
+        "QUESTION QUALITY RULES:\n"
+        "- Each question must have a SPECIFIC, meaningful stem targeting:\n"
+        "  a fact, definition, process step, contrast, or causal relationship.\n"
+        "- BANNED question stems (never use these patterns):\n"
+        "  * 'Which statement is most closely about...'\n"
+        "  * 'Which line from the text...'\n"
+        "  * 'According to the lesson, which statement matches...'\n"
+        "  * 'Which choice aligns best with...'\n"
+        "- GOOD question stems look like:\n"
+        "  * 'Where in a plant cell does photosynthesis take place?'\n"
+        "  * 'What is the primary function of chlorophyll?'\n"
+        "  * 'Which gas is released as a byproduct of photosynthesis?'\n"
+        "  * 'What would happen if a plant were placed in complete darkness?'\n"
+        f"- Return EXACTLY {question_count} questions.\n"
+        "- No repeated questions. No repeated correct answers across questions.\n"
+        "- Vary question types: factual recall, conceptual understanding, application, cause-effect, comparison.\n\n"
+        f"DIVERSITY: Assign each of the {question_count} questions a UNIQUE angle:\n"
+        "  1=definition/what-is, 2=process/how, 3=location/where, 4=cause/why,\n"
+        "  5=effect/consequence, 6=comparison/contrast, 7=application/example,\n"
+        "  8=exception/limitation, 9=sequence/order, 10=key-figure/component\n"
+        "  Label each question stem with its angle in brackets e.g. [definition] What is...\n"
+        "  NEVER assign the same angle to two questions.\n\n"
+    )
+
+    output_format = (
+        "OUTPUT FORMAT — Return valid JSON only. No markdown, no code fences, no explanation.\n"
+        "Required keys: topic, output_language_used, questions\n"
+        "Each question must have:\n"
+        "  id, question, options (array of 4 complete sentences),\n"
+        "  correct_option_index (0-3),\n"
+        "  correct_explanation (why this answer is right),\n"
+        "  wrong_explanation (what mistake leads students to pick wrong answers),\n"
+        "  option_explanations (array of 4 — one reason per option),\n"
+        "  distractor_strategy (array of 3 — strategy name for each wrong option)\n"
+    )
+
     base = (
-        "You are an expert teacher. Generate high-quality MCQ quiz questions.\n"
-        f"Topic label (for orientation only; questions must follow the Context): {topic}\n"
+        "You are an expert teacher and competitive exam question setter.\n"
+        f"Topic: {topic}\n"
         f"Difficulty: {difficulty}\n"
         f"Question count: {question_count}\n"
         f"{_lang_rule(output_language)}\n\n"
-        + (grounded if ctx_excerpt else "")
-        + "Return JSON only (no markdown) with keys: topic, output_language_used, questions.\n"
-        "Each question object must contain: id, question, options (4 options), correct_option_index (0..3), "
-        "correct_explanation, wrong_explanation, option_explanations (length 4; short reason per option).\n"
-        "Ensure exactly one correct option per question. Make distractors plausible.\n"
-        "IMPORTANT RULES:\n"
-        "- Return EXACTLY the requested number of questions.\n"
-        "- Each question stem must ask about a *specific fact, definition, step, or contrast* from the "
-        "Context (not generic prompts like 'which statement is most closely about the topic').\n"
-        "- No repeated questions.\n"
-        "- No repeated option sets across questions.\n"
-        "- Each option must be a complete claim or answer (not labels about answers).\n"
-        "- NEVER use meta-labels like: 'partly incorrect statement', 'unrelated statement', "
-        "'contradictory statement', 'Option 1', or any option that only describes the *type* of answer.\n"
-        "- Use the Context material as the only source of facts when it is provided.\n"
-        + (f"\n\nContext material:\n{ctx_excerpt}" if ctx_excerpt else "")
+        + (grounded if ctx_excerpt else no_context)
+        + distractor_rules
+        + question_rules
+        + output_format
+        + (f"\nContext material:\n{ctx_excerpt}\n" if ctx_excerpt else "")
     )
     return base
 
+
+# ---------------------------------------------------------------------------
+# LLM-powered distractor generation  (KEY NEW FUNCTION)
+# ---------------------------------------------------------------------------
+
+async def _llm_generate_distractors(
+    *,
+    question: str,
+    correct_answer: str,
+    context_excerpt: str,
+    topic: str,
+    provider_name: str,
+    lang: OutputLanguage,
+) -> list[str]:
+    """
+    Ask the LLM to generate 3 high-quality, educationally realistic distractors
+    for a given question + correct answer.  Returns a list of exactly 3 strings.
+    """
+    provider = get_llm_provider(vision=False, provider=provider_name)
+    lang_rule = _lang_rule(lang)
+
+    system = (
+        "You are an expert MCQ distractor writer for competitive exams. "
+        "Return ONLY a JSON array of exactly 3 strings. No markdown, no explanation."
+    )
+    user = (
+        f"{lang_rule}\n\n"
+        f"Topic: {topic}\n"
+        f"Context:\n{context_excerpt[:8000]}\n\n"
+        f"Question: {question}\n"
+        f"Correct answer: {correct_answer}\n\n"
+        "Write 3 wrong answer options (distractors) that:\n"
+        "1. Sound plausible to a student who hasn't studied well\n"
+        "2. Are clearly wrong to someone who has read the context\n"
+        "3. Use varied strategies: common misconception, concept swap, partial truth, cause-effect reversal\n"
+        "4. Are complete claims — NOT just 'Option 1' or negations of the correct answer\n"
+        "5. Are similar in length and style to the correct answer\n\n"
+        'Return ONLY a JSON array: ["distractor 1", "distractor 2", "distractor 3"]'
+    )
+
+    messages: list[Message] = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+    try:
+        raw = await provider.complete_chat(messages, max_tokens=600, temperature=0.85)
+        raw = raw.strip()
+        # Strip markdown fences if any
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        parsed = json.loads(raw)
+        if isinstance(parsed, list) and len(parsed) >= 3:
+            return [str(d).strip() for d in parsed[:3]]
+    except Exception:
+        pass
+
+    # Soft fallback: return empty so caller handles it
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Context sentence helpers
+# ---------------------------------------------------------------------------
 
 def _words(s: str) -> set[str]:
     return set(re.findall(r"[\w]{3,}", s.lower()))
@@ -74,18 +203,6 @@ def _sentences_from_context(text: str, *, min_len: int = 15) -> list[str]:
             continue
         seen.add(key)
         out.append(s[:300])
-    # Split long comma-separated clauses for more candidates
-    if len(out) < 6:
-        extra: list[str] = []
-        for s in list(out):
-            for part in re.split(r"(?<=[,;:])\s+", s):
-                p = part.strip()
-                if min_len <= len(p) <= 300:
-                    k = p.lower()[:100]
-                    if k not in seen:
-                        seen.add(k)
-                        extra.append(p)
-        out.extend(extra)
     return out
 
 
@@ -114,7 +231,6 @@ def _option_grounded(option: str, context: str) -> bool:
 
 
 def _option_soft_overlap(option: str, context: str) -> bool:
-    """True if enough content words from the option appear in the context (accepts paraphrases)."""
     ow = _words(option)
     cw = _words(context)
     if len(ow) < 3:
@@ -132,173 +248,206 @@ def _question_overlaps_context(question: str, context: str, *, min_shared: int =
     return len(qn) >= 24 and qn in context.lower()
 
 
-def _wrong_claims_from_sentence(s: str, topic: str) -> list[str]:
-    """Three plausible-but-wrong options derived from a real sentence (no template meta-phrases)."""
-    s = s.strip()
-    if len(s) < 15:
-        return [
-            f"The main ideas of {topic} are unrelated to observations in experiments.",
-            f"Students can ignore definitions when studying {topic}.",
-            f"{topic} has no standard terminology in textbooks.",
-        ]
-    a = re.sub(r"\bis\b", "is not", s, count=1, flags=re.IGNORECASE)
-    if a.lower() == s.lower():
-        a = re.sub(r"\bequals\b", "does not equal", s, count=1, flags=re.IGNORECASE)
-    if a.lower() == s.lower():
-        a = ("It is false that " + s[0].lower() + s[1:]) if len(s) > 1 else "False: " + s
-    b = s.rstrip(".!?") + "; however, the lesson text rejects this exact claim."
-    c = s[: max(20, len(s) // 2)].rstrip() + " … [misstated] " + "the chapter describes a different relationship."
-    out = [a[:300], b[:300], c[:300]]
-    seen: set[str] = {s.lower()}
-    deduped: list[str] = []
-    for o in out:
-        k = o.lower()
-        if k not in seen:
-            seen.add(k)
-            deduped.append(o)
-    n = 0
-    while len(deduped) < 3:
-        n += 1
-        deduped.append(f"A common exam mistake about {topic} is to confuse this with an unrelated law ({n}).")
-    return deduped[:3]
+# ---------------------------------------------------------------------------
+# Lightweight mechanical distractor helpers  (last-resort only)
+# ---------------------------------------------------------------------------
+
+_SAFE_SWAPS: list[tuple[str, str]] = [
+    ("into", "from"), ("from", "into"),
+    ("all", "no"), ("no", "all"),
+    ("before", "after"), ("after", "before"),
+    ("above", "below"), ("below", "above"),
+    ("increases", "decreases"), ("decreases", "increases"),
+    ("produces", "absorbs"), ("absorbs", "produces"),
+    ("releases", "stores"), ("stores", "releases"),
+    ("converts", "breaks down"),
+    ("causes", "prevents"), ("prevents", "causes"),
+    ("starts", "stops"), ("stops", "starts"),
+    ("gains", "loses"), ("loses", "gains"),
+    ("rises", "falls"), ("falls", "rises"),
+    ("more", "less"), ("less", "more"),
+    ("always", "never"), ("never", "always"),
+    ("directly", "indirectly"),
+]
 
 
-def _best_sentence_index_for_topic(topic: str, sentences: list[str]) -> int:
-    tw = _words(topic)
-    best_i, best = 0, -1
-    for i, s in enumerate(sentences):
-        sc = len(tw & _words(s))
-        if sc > best:
-            best, best_i = sc, i
-    return best_i if best > 0 else 0
+def _replace_first(text: str, old: str, new: str) -> str:
+    pattern = re.compile(re.escape(old), re.IGNORECASE)
+    match = pattern.search(text)
+    if not match:
+        return text
+    replacement = new[0].upper() + new[1:] if match.group(0)[0].isupper() else new
+    return text[: match.start()] + replacement + text[match.end():]
 
 
-def _fallback_context_sentence_quiz(topic: str, idx: int, context_text: str) -> QuizQuestion | None:
-    """Four options are distinct lines from the lesson; correct = best aligned with topic label."""
-    sents = _sentences_from_context(context_text, min_len=15)
-    if len(sents) < 4:
-        return None
-    # Pick a window of 4 unique sentences, rotate by idx
-    start = idx % max(1, len(sents) - 3)
-    chunk = sents[start : start + 4]
-    if len(chunk) < 4:
-        chunk = (sents + sents)[:4]
-    corr_sent = chunk[_best_sentence_index_for_topic(topic, chunk)]
-    others = [s for s in chunk if s[:90].lower() != corr_sent[:90].lower()][:3]
-    while len(others) < 3:
-        for s in sents:
-            if s[:90].lower() != corr_sent[:90].lower() and all(s[:90].lower() != o[:90].lower() for o in others):
-                others.append(s)
-                if len(others) >= 3:
-                    break
-        if len(others) < 3:
+def _tweak_number(text: str) -> str | None:
+    m = re.search(r"\b(19|20)\d{2}\b", text)
+    if m:
+        yr = int(m.group(0))
+        return text[:m.start()] + str(yr + 10 if yr < 2010 else yr - 10) + text[m.end():]
+    m = re.search(r"\b(\d+(\.\d+)?)\s*%", text)
+    if m:
+        val = float(m.group(1))
+        new_val = round(val + 15 if val < 50 else val - 15, 1)
+        return re.sub(re.escape(m.group(0)), f"{new_val}%", text, count=1)
+    m = re.search(r"\b([2-9]\d+|\d{2,})\b", text)
+    if m:
+        val = int(m.group(0))
+        return text[:m.start()] + str(val * 2 if val < 50 else val - round(val * 0.4)) + text[m.end():]
+    return None
+
+
+def _apply_safe_swap(text: str) -> str | None:
+    for original, replacement in _SAFE_SWAPS:
+        if re.search(r"\b" + re.escape(original) + r"\b", text, re.IGNORECASE):
+            return _replace_first(text, original, replacement)
+    return None
+
+
+def _mechanical_distractors(correct: str) -> list[str]:
+    """
+    LAST-RESORT only: purely mechanical manipulation.
+    Caller should prefer _llm_generate_distractors.
+    """
+    s = correct.strip().rstrip(".")
+    wrongs: list[str] = []
+    used: set[str] = {s.lower()}
+
+    def _add(candidate: str | None) -> bool:
+        if not candidate:
+            return False
+        candidate = candidate.strip()
+        if candidate.lower() in used:
+            return False
+        wrongs.append(candidate)
+        used.add(candidate.lower())
+        return True
+
+    _add(_tweak_number(s))
+    _add(_apply_safe_swap(s))
+    # Negation: simple "X is not correct" as very last resort
+    if len(wrongs) < 3:
+        neg = f"It is not the case that: {s[:120]}"
+        _add(neg)
+    # Pad if still short
+    fallbacks = [
+        _apply_safe_swap(s),
+        _tweak_number(s),
+    ]
+    for fb in fallbacks:
+        if len(wrongs) >= 3:
             break
-    if len(others) < 3:
-        return None
+        _add(fb)
 
-    correct_idx = idx % 4
-    options = [""] * 4
-    options[correct_idx] = corr_sent
-    slots = [i for i in range(4) if i != correct_idx]
-    for slot, o in zip(slots, others[:3]):
-        options[slot] = o
+    # Absolute pad
+    i = 1
+    while len(wrongs) < 3:
+        wrongs.append(f"{s[:80]} (variant {i})")
+        i += 1
 
-    n = idx + 1
-    stems = (
-        "[{n}] According to the lesson, which statement best matches «{t}»?",
-        "[{n}] Which line from the text is most directly about «{t}»?",
-        "[{n}] Based only on the passage, which choice aligns best with «{t}»?",
-        "[{n}] The lesson includes several ideas. Which option is most relevant to «{t}»?",
+    return wrongs[:3]
+
+
+# ---------------------------------------------------------------------------
+# LLM-powered fallback question generation  (KEY NEW FUNCTION)
+# ---------------------------------------------------------------------------
+
+async def _llm_fallback_question(
+    *,
+    topic: str,
+    idx: int,
+    context_text: str,
+    provider_name: str,
+    lang: OutputLanguage,
+    avoid_questions: list[str],
+) -> QuizQuestion | None:
+    """
+    Generate a single high-quality MCQ using the LLM when the main batch fails.
+    """
+    provider = get_llm_provider(vision=False, provider=provider_name)
+    lang_rule = _lang_rule(lang)
+    avoid = ""
+    if avoid_questions:
+        avoid = "\nDo NOT generate questions similar to:\n- " + "\n- ".join(avoid_questions[:10])
+
+    system = (
+        "You are an expert teacher and exam-paper setter. "
+        "Return ONLY valid JSON — no markdown, no explanation."
     )
-    tlab = topic.strip() or "this topic"
-    stem = stems[idx % len(stems)].format(n=n, t=tlab)
-    return QuizQuestion(
-        id=f"q{n}",
-        question=stem,
-        options=options,
-        correct_option_index=correct_idx,
-        correct_explanation="This line matches the lesson and fits the topic best among the choices.",
-        wrong_explanation="Another line is a better match, or this line is about a different detail.",
-        option_explanations=["Best topic match from the text."] * 4,
+    user = (
+        f"{lang_rule}\n"
+        f"Topic: {topic}\n"
+        f"Context:\n{context_text[:8000]}\n\n"
+        f"Generate exactly 1 MCQ question (index {idx + 1}) with:\n"
+        "- A specific, targeted question stem (not generic)\n"
+        "- 4 options: 1 correct + 3 realistic distractors using varied strategies "
+        "(misconception, concept swap, partial truth, cause-effect reversal)\n"
+        "- All options must be complete claims, plausible to a weak student\n"
+        + avoid
+        + "\nReturn JSON: {\"question\": str, \"options\": [str,str,str,str], "
+        "\"correct_option_index\": int, \"correct_explanation\": str, "
+        "\"wrong_explanation\": str, \"option_explanations\": [str,str,str,str]}"
     )
 
+    messages: list[Message] = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
 
-def _fallback_question(topic: str, idx: int, context_text: str | None) -> QuizQuestion:
-    ctx = (context_text or "").strip()
-    if ctx:
-        cq = _fallback_context_sentence_quiz(topic, idx, ctx)
-        if cq is not None:
-            oex = [
-                (
-                    "Pulled from your lesson text; compare wording to the chapter."
-                    if j == cq.correct_option_index
-                    else "Also from the lesson, but not the best answer to this question."
-                )
-                for j in range(4)
-            ]
-            return cq.model_copy(update={"option_explanations": oex})
-
-    sents = _sentences_from_context(ctx) if ctx else []
-    n = idx + 1
-    correct_idx = idx % 4
-
-    if sents:
-        base = sents[idx % len(sents)]
-        wrong = _wrong_claims_from_sentence(base, topic)
-        options = [""] * 4
-        options[correct_idx] = base
-        slots = [i for i in range(4) if i != correct_idx]
-        for slot, w in zip(slots, wrong):
-            options[slot] = w
-        qtext = (
-            f"[{n}] According to the lesson text, which statement is faithful to what it says about "
-            f"«{topic}»?"
-        )
+    try:
+        raw = await provider.complete_chat(messages, max_tokens=800, temperature=0.9)
+        raw = raw.strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        data = json.loads(raw)
+        n = idx + 1
         return QuizQuestion(
             id=f"q{n}",
-            question=qtext,
-            options=options,
-            correct_option_index=correct_idx,
-            correct_explanation="This option matches the lesson wording; the others change or negate it.",
-            wrong_explanation="Compare each line to the chapter: three options are distorted.",
-            option_explanations=[
-                "Matches the lesson sentence." if j == correct_idx else "Alters or contradicts the lesson."
-                for j in range(4)
-            ],
+            question=data.get("question", f"[{n}] Question about {topic}"),
+            options=data.get("options", []),
+            correct_option_index=int(data.get("correct_option_index", 0)),
+            correct_explanation=data.get("correct_explanation", ""),
+            wrong_explanation=data.get("wrong_explanation", ""),
+            option_explanations=data.get("option_explanations", [""] * 4),
         )
+    except Exception:
+        return None
 
-    return QuizQuestion(
-        id=f"q{n}",
-        question=f"[{n}] For «{topic}», what do textbooks usually expect you to know first?",
-        options=[
-            f"Key terms, definitions, and how they connect within {topic}.",
-            f"Unrelated trivia that never appears in {topic} chapters.",
-            f"That {topic} is never assessed in exams.",
-            f"That you should skip diagrams when studying {topic}.",
-        ],
-        correct_option_index=0,
-        correct_explanation="Definitions and relationships are the usual foundation.",
-        wrong_explanation="The other choices are not serious study goals.",
-        option_explanations=[
-            "Standard study approach.",
-            "Not a serious distractor.",
-            "Not a serious distractor.",
-            "Not a serious distractor.",
-        ],
-    )
 
+# ---------------------------------------------------------------------------
+# Quality checks
+# ---------------------------------------------------------------------------
 
 _BOILERPLATE_SUBSTR = (
     "partly incorrect statement mixing",
     "unrelated statement that does not explain",
     "contradictory statement about",
     "conceptually correct statement about",
+    "this statement does not correctly describe",
+    "this interpretation of",
+    "this explanation conflicts",
+    "this option does not fully match",
 )
+
+_META_OPTION_PATTERNS = [
+    r"^option\s*\d+\s*$",
+    r"^(partly|partially)\s+incorrect",
+    r"^(unrelated|contradictory|conceptually correct)\s+statement",
+    r"^this statement (does not|is not|contradicts)",
+    r"^this (interpretation|explanation|option)",
+    r"\bis not correct\.$",
+]
+
+
+def _is_boilerplate_option(opt: str) -> bool:
+    ol = opt.lower().strip()
+    if any(b in ol for b in _BOILERPLATE_SUBSTR):
+        return True
+    return any(re.search(p, ol, re.I) for p in _META_OPTION_PATTERNS)
 
 
 def _looks_like_boilerplate_options(options: list[str]) -> bool:
-    joined = " ".join(o.lower() for o in options)
-    return any(b in joined for b in _BOILERPLATE_SUBSTR)
+    return any(_is_boilerplate_option(o) for o in options)
 
 
 def _question_needs_fallback(q: QuizQuestion, context_text: str | None) -> bool:
@@ -314,85 +463,52 @@ def _question_needs_fallback(q: QuizQuestion, context_text: str | None) -> bool:
         return True
     if not ctx:
         return False
-
     hard = sum(1 for o in opts if _option_grounded(o, ctx))
     soft = sum(1 for o in opts if _option_soft_overlap(o, ctx))
-    q_ok = _question_overlaps_context(q.question, ctx, min_shared=3)
-
-    # Requiring all four options to match the text literally rejected good paraphrases and
-    # forced the same template question repeatedly (only options changed).
-    if hard >= 2:
+    q_ok = _question_overlaps_context(q.question, ctx, min_shared=2)
+    if hard >= 1:
         return False
-    if hard >= 1 and q_ok:
+    if soft >= 3:
         return False
-    if soft >= 3 and q_ok:
+    if soft >= 2 and q_ok:
         return False
-    if soft >= 2 and hard >= 1:
-        return False
-    if hard == 0 and soft <= 1:
+    if not q_ok:
         return True
     return False
 
 
-def _normalize_questions(
-    parsed: QuizGenerateResponse,
-    topic: str,
-    question_count: int,
-    context_text: str | None,
-) -> QuizGenerateResponse:
-    qs: list[QuizQuestion] = []
-    seen_q: set[str] = set()
-    for i, q in enumerate(parsed.questions):
-        options = [o.strip() for o in (q.options or [])[:4] if o and o.strip()]
-        if len(options) < 4:
-            options += [f"Option {j}" for j in range(len(options) + 1, 5)]
-        deduped: list[str] = []
-        seen_opt: set[str] = set()
-        for opt in options:
-            key = opt.lower().strip()
-            if key not in seen_opt:
-                seen_opt.add(key)
-                deduped.append(opt)
-        options = deduped[:4]
-        if len(options) < 4:
-            options += [f"Option {j}" for j in range(len(options) + 1, 5)]
-
-        q_key = q.question.lower().strip()
-        if not q_key or q_key in seen_q:
+def _count_bad_distractors(q: QuizQuestion) -> int:
+    """Count how many wrong options are boilerplate/mechanical."""
+    count = 0
+    for i, opt in enumerate(q.options or []):
+        if i == q.correct_option_index:
             continue
-        seen_q.add(q_key)
+        if _is_boilerplate_option(opt):
+            count += 1
+        # Detect pure negation patterns
+        elif re.search(r"\b(is not|does not|cannot|will not|never)\b", opt.lower()):
+            # Not always bad, but flag if the rest of the option is very close to correct
+            correct = (q.options or [""])[q.correct_option_index]
+            correct_words = _words(correct)
+            opt_words = _words(opt)
+            if correct_words and len(correct_words & opt_words) / len(correct_words) > 0.7:
+                count += 1
+    return count
 
-        idx = q.correct_option_index if 0 <= q.correct_option_index < 4 else 0
-        oex = q.option_explanations[:4] if q.option_explanations else None
-        if oex is not None and len(oex) < 4:
-            oex += [q.wrong_explanation] * (4 - len(oex))
 
-        built = q.model_copy(
-            update={
-                "id": f"q{i + 1}",
-                "options": options,
-                "correct_option_index": idx,
-                "option_explanations": oex,
-            }
-        )
-        if _question_needs_fallback(built, context_text):
-            built = _fallback_question(topic, i, context_text).model_copy(update={"id": f"q{i + 1}"})
-        qs.append(built)
-
-    while len(qs) < question_count:
-        qs.append(_fallback_question(topic, len(qs), context_text))
-
-    return parsed.model_copy(update={"questions": qs[:question_count]})
-
+# ---------------------------------------------------------------------------
+# JSON extraction
+# ---------------------------------------------------------------------------
 
 def _extract_json_obj(raw: str) -> dict | None:
     raw = raw.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
     try:
         obj = json.loads(raw)
         return obj if isinstance(obj, dict) else None
     except Exception:
         pass
-
     start = raw.find("{")
     end = raw.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -404,6 +520,157 @@ def _extract_json_obj(raw: str) -> dict | None:
             return None
     return None
 
+
+# ---------------------------------------------------------------------------
+# Normalize / repair questions
+# ---------------------------------------------------------------------------
+
+async def _normalize_questions(
+    parsed: QuizGenerateResponse,
+    topic: str,
+    question_count: int,
+    context_text: str | None,
+    llm_provider: str,
+    output_language: OutputLanguage,
+) -> QuizGenerateResponse:
+    qs: list[QuizQuestion] = []
+    seen_q: set[str] = set()
+    ctx = (context_text or "").strip()
+
+    for i, q in enumerate(parsed.questions):
+        # --- Clean & dedupe options ---
+        raw_options = [o.strip() for o in (q.options or []) if o and o.strip()]
+        deduped: list[str] = []
+        seen_opt: set[str] = set()
+        for opt in raw_options:
+            k = opt.lower()
+            if k not in seen_opt:
+                seen_opt.add(k)
+                deduped.append(opt)
+        options = deduped
+
+        # --- Fix boilerplate options using LLM ---
+        bad_indices = [
+            j for j, o in enumerate(options)
+            if j != q.correct_option_index and _is_boilerplate_option(o)
+        ]
+        if bad_indices:
+            correct_text = options[q.correct_option_index] if 0 <= q.correct_option_index < len(options) else ""
+            new_distractors = await _llm_generate_distractors(
+                question=q.question,
+                correct_answer=correct_text,
+                context_excerpt=ctx,
+                topic=topic,
+                provider_name=llm_provider,
+                lang=output_language,
+            )
+            if not new_distractors:
+                new_distractors = _mechanical_distractors(correct_text)
+
+            di = 0
+            for bad_j in bad_indices:
+                if di < len(new_distractors):
+                    candidate = new_distractors[di]
+                    if candidate.lower() not in seen_opt:
+                        options[bad_j] = candidate
+                        seen_opt.add(candidate.lower())
+                        di += 1
+
+        # --- Fill missing options ---
+        if len(options) < 4:
+            correct_text = options[q.correct_option_index] if 0 <= q.correct_option_index < len(options) else ""
+            new_distractors = await _llm_generate_distractors(
+                question=q.question,
+                correct_answer=correct_text,
+                context_excerpt=ctx,
+                topic=topic,
+                provider_name=llm_provider,
+                lang=output_language,
+            ) if correct_text else []
+            if not new_distractors:
+                new_distractors = _mechanical_distractors(correct_text) if correct_text else []
+            for d in new_distractors:
+                if len(options) >= 4:
+                    break
+                if d.lower() not in seen_opt:
+                    options.append(d)
+                    seen_opt.add(d.lower())
+
+        # --- Question dedupe ---
+        q_key = " ".join(_words(q.question))
+        if not q_key or q_key in seen_q:
+            continue
+        seen_q.add(q_key)
+
+        # --- Correct answer dedupe (prevents same answer repeating across questions) ---
+        correct_text = options[q.correct_option_index] if 0 <= q.correct_option_index < len(options) else ""
+        correct_key = " ".join(_words(correct_text))
+        if correct_key and correct_key in seen_q:
+            continue  # skip question whose correct answer already appeared
+        if correct_key:
+            seen_q.add(correct_key)
+
+        # --- Validate correct index ---
+        idx = q.correct_option_index
+        if idx < 0 or idx >= len(options):
+            idx = 0
+
+        # --- Option explanations ---
+        oex = (q.option_explanations or [])[:4]
+        while len(oex) < 4:
+            oex.append(q.wrong_explanation or "")
+
+        built = q.model_copy(
+            update={
+                "id": f"q{i + 1}",
+                "options": options[:4],
+                "correct_option_index": idx,
+                "option_explanations": oex,
+            }
+        )
+        qs.append(built)
+
+    # --- Fill remaining with LLM-generated fallback questions ---
+    while len(qs) < question_count:
+        idx = len(qs)
+        avoid = [q.question for q in qs]
+        llm_q = await _llm_fallback_question(
+            topic=topic,
+            idx=idx,
+            context_text=ctx,
+            provider_name=llm_provider,
+            lang=output_language,
+            avoid_questions=avoid,
+        )
+        if llm_q and llm_q.question.lower().strip() not in seen_q:
+            seen_q.add(llm_q.question.lower().strip())
+            qs.append(llm_q)
+        else:
+            # Absolute last resort: static placeholder (shouldn't normally happen)
+            qs.append(QuizQuestion(
+                id=f"q{idx + 1}",
+                question=f"[{idx + 1}] Based on the lesson, which statement about '{topic}' is correct?",
+                options=[
+                    f"The concept of {topic} is central to understanding this lesson.",
+                    f"{topic} is unrelated to the main idea of the passage.",
+                    f"The passage never mentions {topic} in any context.",
+                    f"{topic} only applies in situations not covered by this lesson.",
+                ],
+                correct_option_index=0,
+                correct_explanation=f"The lesson focuses on {topic} as a key concept.",
+                wrong_explanation="The other options misrepresent the lesson content.",
+                option_explanations=[
+                    "Supported by the overall lesson.", "Contradicts the lesson.",
+                    "Factually wrong.", "Too narrow a claim.",
+                ],
+            ))
+
+    return parsed.model_copy(update={"questions": qs[:question_count]})
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
 
 async def generate_quiz(
     *,
@@ -418,7 +685,7 @@ async def generate_quiz(
     collected: list[QuizQuestion] = []
     seen: set[str] = set()
     ctx = (context_text or "").strip()
-    temp = 0.22 if ctx else 0.42
+    temp = 0.9 if ctx else 1.0
     max_tok = 9000 if ctx else 5000
 
     for attempt in range(3):
@@ -429,14 +696,25 @@ async def generate_quiz(
         avoid = ""
         if collected:
             prev = [q.question for q in collected]
-            avoid = "\nAlready generated questions (do NOT repeat):\n- " + "\n- ".join(prev[:20])
+            avoid = "\nAlready generated questions (do NOT repeat or rephrase):\n- " + "\n- ".join(prev[:20])
 
         messages: list[Message] = [
             {
                 "role": "system",
                 "content": (
-                    "You output strict JSON only. When CONTEXT is provided, every question and all four "
-                    "options must be grounded in that CONTEXT (quotes or tight paraphrases)."
+                    "You output strict JSON only — no markdown, no preamble.\n\n"
+                    "DISTRACTOR RULES (non-negotiable):\n"
+                    "- Wrong options must use named strategies: misconception, concept_swap, partial_truth, "
+                    "cause_effect_reversal, over_generalisation, plausible_neighbour.\n"
+                    "- A wrong option that only negates the correct answer is FORBIDDEN.\n"
+                    "- Each wrong option must be a complete, meaningful claim that a student might believe.\n"
+                    "- All 4 options must be similar in length and grammatical structure.\n"
+                    "QUESTION DIVERSITY RULES (non-negotiable):\n"
+                    "- Each question must cover a DIFFERENT sub-topic or aspect — causes, events, figures, "
+                    "consequences, ideology, dates, comparisons, definitions — never repeat the same angle.\n"
+                    "- NEVER generate two questions with the same correct answer.\n"
+                    "- NEVER use 'what was a significant outcome' or similar generic stems more than once.\n"
+                    "- Stems must be concrete and specific — no generic 'which statement is about X' questions.\n"
                 ),
             },
             {
@@ -470,9 +748,15 @@ async def generate_quiz(
                 questions=[],
             )
 
-        normalized_try = _normalize_questions(
-            parsed_try, topic=topic, question_count=max(len(parsed_try.questions), 1), context_text=context_text
+        normalized_try = await _normalize_questions(
+            parsed_try,
+            topic=topic,
+            question_count=max(len(parsed_try.questions), 1),
+            context_text=context_text,
+            llm_provider=llm_provider,
+            output_language=output_language,
         )
+
         for q in normalized_try.questions:
             key = q.question.lower().strip()
             if key and key not in seen:
@@ -487,4 +771,11 @@ async def generate_quiz(
         questions=collected,
     )
     parsed = parsed.model_copy(update={"output_language_used": output_language, "topic": topic})
-    return _normalize_questions(parsed, topic, question_count, context_text)
+    return await _normalize_questions(
+        parsed,
+        topic,
+        question_count,
+        context_text,
+        llm_provider=llm_provider,
+        output_language=output_language,
+    )
