@@ -1,3 +1,4 @@
+# app/services/llm/explain.py
 import base64
 import json
 import re
@@ -5,38 +6,214 @@ import re
 from pydantic import ValidationError
 
 from app.schemas.explain import ExplainResponse, VisualAssetBrief
-from app.schemas.language import OutputLanguage
+from app.schemas.language import OutputLanguage, normalize_output_language
 from app.services.llm.factory import get_llm_provider
 from app.services.llm.types import ImageUrlPart, Message, TextPart
 from app.services.pdf_extract import extract_pdf_to_text
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEW ── Language auto-detection from free text / topic_hint
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Maps trigger phrases (lowercase) → OutputLanguage
+# Kept as a plain dict so it's easy to extend without touching any logic.
+_LANG_TRIGGER_PHRASES: dict[str, OutputLanguage] = {
+    # Telugu
+    "in telugu": "telugu",
+    "telugu lo": "telugu",
+    "telugu లో": "telugu",
+    # Tamil
+    "in tamil": "tamil",
+    "tamil il": "tamil",
+    # Gujarati
+    "in gujarati": "gujarati",
+    "gujarati ma": "gujarati",
+    "gujarati માં": "gujarati",
+    # Marathi
+    "in marathi": "marathi",
+    "marathi madhe": "marathi",
+    # Bengali
+    "in bengali": "bengali",
+    "in bangla": "bengali",
+    "banglay": "bengali",
+    # Kannada
+    "in kannada": "kannada",
+    "kannada alli": "kannada",
+    # Malayalam
+    "in malayalam": "malayalam",
+    "malayalam il": "malayalam",
+    # Punjabi
+    "in punjabi": "punjabi",
+    "punjabi vich": "punjabi",
+    # Urdu
+    "in urdu": "urdu",
+    "urdu mein": "urdu",
+    # Hindi
+    "in hindi": "hindi",
+    "hindi mein": "hindi",
+    "hindi me": "hindi",
+    # Roman Hindi
+    "in roman hindi": "roman_hindi",
+    "in hinglish": "roman_hindi",
+    # English (explicit override)
+    "in english": "english",
+}
+
+
+def detect_language_from_text(
+    chapter_text: str,
+    topic_hint: str | None,
+) -> OutputLanguage | None:
+    """
+    NEW FEATURE — Scan chapter_text and topic_hint for natural language phrases
+    like 'explain in Telugu' or 'hindi mein samjhao'.
+
+    Returns the detected OutputLanguage, or None if nothing found.
+    The endpoint calls this BEFORE falling back to the explicit output_language param,
+    so mentioning language in the prompt always wins.
+
+    To add a new trigger phrase: just add a key→value to _LANG_TRIGGER_PHRASES above.
+    """
+    combined = " ".join(filter(None, [chapter_text, topic_hint])).lower()
+    for phrase, lang in _LANG_TRIGGER_PHRASES.items():
+        if phrase in combined:
+            return lang
+    return None
+
+
+def resolve_output_language(
+    explicit_language: OutputLanguage,
+    chapter_text: str,
+    topic_hint: str | None,
+) -> tuple[OutputLanguage, str | None]:
+    """
+    NEW FEATURE — Combine explicit param + auto-detection.
+
+    Priority:
+      1. Language detected from text/topic_hint  (highest — user said it in plain words)
+      2. Explicit output_language param           (set by UI dropdown / API caller)
+      3. Default: 'english'
+
+    Returns:
+      (resolved_language, detected_language_or_None)
+      The second value is echoed in ExplainResponse.detected_language_from_prompt.
+    """
+    detected = detect_language_from_text(chapter_text, topic_hint)
+    if detected:
+        return detected, detected
+    return explicit_language, None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEW ── Per-language instruction blocks
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# All language-specific LLM instructions live here in one place.
+# To add a language: add a key to _LANG_INSTRUCTIONS and update language.py.
+_LANG_INSTRUCTIONS: dict[OutputLanguage, str] = {
+    "english": (
+        "OUTPUT_LANGUAGE=english. All learner-facing strings must be in English."
+    ),
+    "hindi": (
+        "OUTPUT_LANGUAGE=hindi (Devanagari). All learner-facing strings — "
+        "explanation_markdown, simple_examples, visual_brief title/description, "
+        "suggested_followup_topics, video_lesson_prompt — MUST be in Hindi using "
+        "देवनागरी script. Do not use Roman/Latin letters for Hindi words. "
+        "Translate from the chapter if it is in English."
+    ),
+    "roman_hindi": (
+        "OUTPUT_LANGUAGE=roman_hindi (Hindi in Latin letters only). "
+        "All learner-facing strings — explanation_markdown, simple_examples, "
+        "visual_brief title/description, suggested_followup_topics, video_lesson_prompt — "
+        "MUST be Hindi written with A–Z letters only "
+        "(e.g. \"Prakash ki paravartan\", \"Darpan par padne wala kon\"). "
+        "Do NOT use Devanagari (no Hindi script). "
+        "JSON keys stay English; enum tokens kind/suggested_format stay as specified. "
+        "Mermaid labels: Roman Hindi or very short English. "
+        "Translate the teaching from the chapter even if the chapter is English."
+    ),
+    "telugu": (
+        "OUTPUT_LANGUAGE=telugu. All learner-facing strings MUST be in Telugu script (తెలుగు). "
+        "Use proper Telugu script for all explanations, examples, topics, and captions. "
+        "Do not mix in English words unless they are proper nouns with no Telugu equivalent. "
+        "Translate fully from the chapter even if it is in English."
+    ),
+    "tamil": (
+        "OUTPUT_LANGUAGE=tamil. All learner-facing strings MUST be in Tamil script (தமிழ்). "
+        "Use proper Tamil script for all explanations, examples, topics, and captions. "
+        "Translate fully from the chapter even if it is in English."
+    ),
+    "gujarati": (
+        "OUTPUT_LANGUAGE=gujarati. All learner-facing strings MUST be in Gujarati script (ગુજરાતી). "
+        "Use proper Gujarati script for all explanations, examples, topics, and captions. "
+        "Translate fully from the chapter even if it is in English."
+    ),
+    "marathi": (
+        "OUTPUT_LANGUAGE=marathi. All learner-facing strings MUST be in Marathi (मराठी) "
+        "using Devanagari script. "
+        "Translate fully from the chapter even if it is in English."
+    ),
+    "bengali": (
+        "OUTPUT_LANGUAGE=bengali. All learner-facing strings MUST be in Bengali script (বাংলা). "
+        "Use proper Bengali script for all explanations, examples, topics, and captions. "
+        "Translate fully from the chapter even if it is in English."
+    ),
+    "kannada": (
+        "OUTPUT_LANGUAGE=kannada. All learner-facing strings MUST be in Kannada script (ಕನ್ನಡ). "
+        "Use proper Kannada script for all explanations, examples, topics, and captions. "
+        "Translate fully from the chapter even if it is in English."
+    ),
+    "malayalam": (
+        "OUTPUT_LANGUAGE=malayalam. All learner-facing strings MUST be in Malayalam script (മലയാളം). "
+        "Use proper Malayalam script for all explanations, examples, topics, and captions. "
+        "Translate fully from the chapter even if it is in English."
+    ),
+    "punjabi": (
+        "OUTPUT_LANGUAGE=punjabi. All learner-facing strings MUST be in Punjabi/Gurmukhi "
+        "script (ਪੰਜਾਬੀ). "
+        "Use proper Gurmukhi script for all explanations, examples, topics, and captions. "
+        "Translate fully from the chapter even if it is in English."
+    ),
+    "urdu": (
+        "OUTPUT_LANGUAGE=urdu. All learner-facing strings MUST be in Urdu script (اردو). "
+        "Write right-to-left in Nastaliq style. "
+        "Translate fully from the chapter even if it is in English."
+    ),
+}
+
+_SCRIPT_LABEL: dict[OutputLanguage, str] = {
+    "english":     "English only",
+    "hindi":       "Hindi in Devanagari script only (देवनागरी)",
+    "roman_hindi": "Roman Hindi only (Hindi in Latin alphabet, no Devanagari)",
+    "telugu":      "Telugu script only (తెలుగు)",
+    "tamil":       "Tamil script only (தமிழ்)",
+    "gujarati":    "Gujarati script only (ગુજરાતી)",
+    "marathi":     "Marathi in Devanagari script (मराठी)",
+    "bengali":     "Bengali script only (বাংলা)",
+    "kannada":     "Kannada script only (ಕನ್ನಡ)",
+    "malayalam":   "Malayalam script only (മലയാളം)",
+    "punjabi":     "Punjabi in Gurmukhi script only (ਪੰਜਾਬੀ)",
+    "urdu":        "Urdu script only (اردو)",
+}
+
+
 def _user_language_block(output_language: OutputLanguage, *, closing: bool = False) -> str:
-    """Strong, repeated instructions; JSON schema examples were biasing models toward English."""
-    if output_language == "english":
-        line = "OUTPUT_LANGUAGE=english. All learner-facing strings must be in English."
-    elif output_language == "hindi":
-        line = (
-            "OUTPUT_LANGUAGE=hindi (Devanagari). All learner-facing strings — explanation_markdown, "
-            "simple_examples, visual_brief title/description, suggested_followup_topics, "
-            "video_lesson_prompt — MUST be in Hindi using देवनागरी script. "
-            "Do not use Roman/Latin letters for Hindi words. Translate from the chapter if it is in English."
-        )
-    else:
-        line = (
-            "OUTPUT_LANGUAGE=roman_hindi (Hindi in Latin letters only). "
-            "All learner-facing strings — explanation_markdown, simple_examples, "
-            "visual_brief title/description, suggested_followup_topics, video_lesson_prompt — "
-            "MUST be Hindi written with A–Z letters only (e.g. \"Prakash ki paravartan\", "
-            "\"Darpan par padne wala kon\"). "
-            "Do NOT use Devanagari (no Hindi script). "
-            "JSON keys stay English; enum tokens kind/suggested_format stay as specified. "
-            "Mermaid labels: Roman Hindi or very short English. "
-            "Translate the teaching from the chapter even if the chapter is English."
-        )
+    """
+    Build the per-message language instruction block injected into every LLM call.
+    Uses _LANG_INSTRUCTIONS — add new languages there, not here.
+    """
+    line = _LANG_INSTRUCTIONS.get(
+        output_language,
+        f"OUTPUT_LANGUAGE={output_language}. All learner-facing strings must be in {output_language}.",
+    )
     tag = "FINAL CHECK — " if closing else ""
     return f"{tag}{line}\n\n"
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# (unchanged) JSON contract + system prompt
+# ═══════════════════════════════════════════════════════════════════════════════
 
 _JSON_CONTRACT = """
 Return a single JSON object only (no markdown code fences).
@@ -66,12 +243,7 @@ LANGUAGE: Every string that students will read MUST follow OUTPUT_LANGUAGE from 
 
 def _system_prompt(output_language: OutputLanguage, topic_hint: str | None) -> str:
     focus = f" Focus the explanation on: {topic_hint}." if topic_hint else ""
-    if output_language == "english":
-        lang = "Learner-facing text: English only."
-    elif output_language == "hindi":
-        lang = "Learner-facing text: Hindi in Devanagari only (देवनागरी)."
-    else:
-        lang = "Learner-facing text: Roman Hindi only (Hindi in Latin alphabet, no Devanagari)."
+    lang = f"Learner-facing text: {_SCRIPT_LABEL.get(output_language, output_language)} only."
     return (
         "You are an expert school teacher. Simplify the chapter for students using clear structure, "
         "realistic examples, and language that matches OUTPUT_LANGUAGE exactly.\n"
@@ -80,6 +252,10 @@ def _system_prompt(output_language: OutputLanguage, topic_hint: str | None) -> s
         + _JSON_CONTRACT
     )
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# (unchanged) Mermaid sanitization helpers
+# ═══════════════════════════════════════════════════════════════════════════════
 
 _MERMAID_HEADER = re.compile(
     r"^\s*(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram(?:-v2)?|erDiagram|"
@@ -99,7 +275,6 @@ def _strip_mermaid_fences(raw: str | None) -> str | None:
 
 
 def _sanitize_mermaid_diagram(raw: str | None) -> str | None:
-    """Drop preamble lines; ensure a Mermaid diagram keyword starts the chart (v11 is strict)."""
     md = _strip_mermaid_fences(raw)
     if not md:
         return None
@@ -121,7 +296,6 @@ def _sanitize_mermaid_diagram(raw: str | None) -> str | None:
     diagram = "\n".join(lines[start:]).strip()
     if not diagram:
         return None
-    # Smart quotes / unicode dashes often break Mermaid 11 parsers in labels.
     diagram = (
         diagram.replace("\u201c", '"')
         .replace("\u201d", '"')
@@ -134,6 +308,10 @@ def _sanitize_mermaid_diagram(raw: str | None) -> str | None:
     return diagram
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# (unchanged) JSON parsing + coercion helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def _strip_response_json_fences(raw: str) -> str:
     s = raw.strip()
     s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
@@ -142,7 +320,6 @@ def _strip_response_json_fences(raw: str) -> str:
 
 
 def _extract_json_object(raw: str) -> dict | None:
-    """Parse JSON from model output; tolerate leading/trailing prose and fenced blocks."""
     s = _strip_response_json_fences(raw)
     try:
         obj = json.loads(s)
@@ -202,7 +379,6 @@ def _normalize_visual_briefs(items: object) -> list[dict]:
 
 
 def _coerce_explain_dict(data: dict) -> dict:
-    """Map common wrong shapes (e.g. title+text only) toward the ExplainResponse schema."""
     d = dict(data)
     em = d.get("explanation_markdown")
     if not isinstance(em, str) or not em.strip():
@@ -272,6 +448,7 @@ def _fallback_explain_response(raw: str) -> ExplainResponse:
         mermaid_diagram=None,
         diagram_caption=None,
         output_language_used=None,
+        detected_language_from_prompt=None,
         pdf_extraction_notes=None,
         source_text_used_for_context=None,
     )
@@ -292,7 +469,6 @@ def _parse_explain_json(raw: str) -> ExplainResponse:
 
 
 def _explain_max_tokens(chapter_len: int) -> int:
-    """Long PDF context needs a larger JSON lesson in the reply."""
     if chapter_len > 45_000:
         return 16_384
     if chapter_len > 15_000:
@@ -302,9 +478,23 @@ def _explain_max_tokens(chapter_len: int) -> int:
     return 4096
 
 
-def _finalize(parsed: ExplainResponse, output_language: OutputLanguage) -> ExplainResponse:
-    return parsed.model_copy(update={"output_language_used": output_language})
+def _finalize(
+    parsed: ExplainResponse,
+    output_language: OutputLanguage,
+    detected_language: str | None = None,
+) -> ExplainResponse:
+    """Stamp output_language_used and detected_language_from_prompt onto the response."""
+    return parsed.model_copy(
+        update={
+            "output_language_used": output_language,
+            "detected_language_from_prompt": detected_language,
+        }
+    )
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Public service functions (called by endpoint handlers)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 async def explain_from_pdf_bytes(
     pdf_bytes: bytes,
@@ -317,9 +507,10 @@ async def explain_from_pdf_bytes(
 ) -> ExplainResponse:
     ext = extract_pdf_to_text(pdf_bytes, ocr_pages=ocr_pages, ocr_images=ocr_images)
     prefix = (
-        "[Source: PDF extraction — content from **all extracted pages** is included below (each page starts with "
-        "=== Page N ===). Tables appear in [Table …] blocks; text from figures or scans in [Text from image…] or "
-        "[Page N — OCR from page image] blocks. Base your lesson on the **entire** excerpt, not only the opening lines.]\n\n"
+        "[Source: PDF extraction — content from **all extracted pages** is included below "
+        "(each page starts with === Page N ===). Tables appear in [Table …] blocks; "
+        "text from figures or scans in [Text from image…] or [Page N — OCR from page image] blocks. "
+        "Base your lesson on the **entire** excerpt, not only the opening lines.]\n\n"
     )
     out = await explain_from_text(
         prefix + ext.chapter_text,
@@ -342,15 +533,21 @@ async def explain_from_text(
     topic_hint: str | None,
     llm_provider: str | None = None,
 ) -> ExplainResponse:
+    # ── NEW: auto-detect language from text/topic_hint ────────────────────────
+    resolved_lang, detected = resolve_output_language(
+        output_language, chapter_text, topic_hint
+    )
+    # ─────────────────────────────────────────────────────────────────────────
+
     body = (
-        _user_language_block(output_language)
+        _user_language_block(resolved_lang)
         + "Chapter content (source material; may be any language — translate and explain fully in OUTPUT_LANGUAGE):\n\n"
         + chapter_text.strip()
         + "\n\n"
-        + _user_language_block(output_language, closing=True)
+        + _user_language_block(resolved_lang, closing=True)
     )
     messages: list[Message] = [
-        {"role": "system", "content": _system_prompt(output_language, topic_hint)},
+        {"role": "system", "content": _system_prompt(resolved_lang, topic_hint)},
         {"role": "user", "content": body},
     ]
     provider = get_llm_provider(vision=False, provider=llm_provider)
@@ -360,7 +557,7 @@ async def explain_from_text(
         max_tokens=_explain_max_tokens(body_len),
         temperature=0.35,
     )
-    return _finalize(_parse_explain_json(raw), output_language)
+    return _finalize(_parse_explain_json(raw), resolved_lang, detected)
 
 
 def _guess_mime(header: bytes) -> str:
@@ -382,14 +579,20 @@ async def explain_from_image_bytes(
     topic_hint: str | None,
     llm_provider: str | None = None,
 ) -> ExplainResponse:
+    # ── NEW: auto-detect language from topic_hint ─────────────────────────────
+    resolved_lang, detected = resolve_output_language(
+        output_language, "", topic_hint
+    )
+    # ─────────────────────────────────────────────────────────────────────────
+
     intro = (
-        _user_language_block(output_language)
+        _user_language_block(resolved_lang)
         + "These images are textbook chapter pages. Read them, then explain simply for students. "
         + "All learner-facing strings in your JSON must follow OUTPUT_LANGUAGE. "
         + (f"Emphasize: {topic_hint}. " if topic_hint else "")
         + _JSON_CONTRACT
     )
-    closing = _user_language_block(output_language, closing=True)
+    closing = _user_language_block(resolved_lang, closing=True)
 
     content: list[TextPart | ImageUrlPart] = [{"type": "text", "text": intro}]
 
@@ -410,10 +613,10 @@ async def explain_from_image_bytes(
     content.append({"type": "text", "text": closing})
 
     messages: list[Message] = [
-        {"role": "system", "content": _system_prompt(output_language, topic_hint)},
+        {"role": "system", "content": _system_prompt(resolved_lang, topic_hint)},
         {"role": "user", "content": content},
     ]
 
     provider = get_llm_provider(vision=True, provider=llm_provider)
     raw = await provider.complete_chat(messages, max_tokens=4096, temperature=0.35)
-    return _finalize(_parse_explain_json(raw), output_language)
+    return _finalize(_parse_explain_json(raw), resolved_lang, detected)

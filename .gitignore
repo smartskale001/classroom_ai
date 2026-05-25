@@ -1,10 +1,27 @@
-.venv/
+﻿# Python
+venv/
 __pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
+*.pyc
+*.pyo
 .env
-.env.example
 *.egg-info/
 dist/
 build/
+.pytest_cache/
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
