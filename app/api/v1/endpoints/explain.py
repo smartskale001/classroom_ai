@@ -1,3 +1,4 @@
+# app/api/v1/endpoints/explain.py
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -15,6 +16,10 @@ def _to_llm_provider(stack: ModelStack) -> Literal["openai", "ollama"]:
     return "openai" if stack == "openai" else "ollama"
 
 
+def _form_bool(raw: str) -> bool:
+    return str(raw).lower() in ("true", "1", "yes", "on")
+
+
 # Annotated + File() helps OpenAPI/Swagger show multipart controls for file lists.
 ChapterScreenshots = Annotated[
     list[UploadFile],
@@ -22,12 +27,25 @@ ChapterScreenshots = Annotated[
 ]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# /text  — JSON body
+# ─────────────────────────────────────────────────────────────────────────────
+
 @router.post("/text", response_model=ExplainResponse)
 async def explain_text(
     body: ExplainFromTextRequest,
     stack: ModelStack = "openai",
 ) -> ExplainResponse:
-    """JSON body. Multi-line `chapter_text` must use `\\n` in JSON, not raw newlines."""
+    """
+    JSON body endpoint.
+
+    Multi-line `chapter_text` must use `\\n` in JSON, not raw newlines.
+
+    **Auto-language detection:** mention a language anywhere in `chapter_text`
+    or `topic_hint` (e.g. *"explain in Telugu"*, *"hindi mein samjhao"*) and
+    the API will use that language regardless of the `output_language` field.
+    Default is **english**.
+    """
     try:
         return await explanation_service.explain_from_text(
             body.chapter_text,
@@ -41,13 +59,33 @@ async def explain_text(
         raise HTTPException(status_code=502, detail=f"LLM request failed: {e!s}") from e
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# /text-form  — multipart form (Swagger-friendly, default for most clients)
+# ─────────────────────────────────────────────────────────────────────────────
+
 @router.post("/text-form", response_model=ExplainResponse)
 async def explain_text_form(
     chapter_text: Annotated[str, Form(..., description="Full chapter; newlines allowed.")],
-    output_language: Annotated[str, Form()] = "english",
-    topic_hint: Annotated[str | None, Form()] = None,
+    output_language: Annotated[
+        str,
+        Form(
+            description=(
+                "english (default) | hindi | roman_hindi | telugu | tamil | "
+                "gujarati | marathi | bengali | kannada | malayalam | punjabi | urdu. "
+                "You can also write 'explain in Telugu' inside chapter_text or topic_hint "
+                "and the language will be auto-detected."
+            )
+        ),
+    ] = "english",
+    topic_hint: Annotated[str | None, Form(description="Optional focus / language hint.")] = None,
     stack: Annotated[ModelStack, Form()] = "openai",
 ) -> ExplainResponse:
+    """
+    Form-data endpoint (easiest to test in Swagger /docs).
+
+    **Auto-language detection:** write *"explain in Telugu"* or *"gujarati ma samjhao"*
+    anywhere in `chapter_text` or `topic_hint` — no need to set `output_language`.
+    """
     hint = (topic_hint or "").strip() or None
     lang = normalize_output_language(output_language)
     try:
@@ -62,6 +100,10 @@ async def explain_text_form(
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"LLM request failed: {e!s}") from e
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /image  — single image upload
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/image", response_model=ExplainResponse)
 async def explain_one_image(
@@ -89,6 +131,10 @@ async def explain_one_image(
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"LLM request failed: {e!s}") from e
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /images  — multiple image upload
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/images", response_model=ExplainResponse)
 async def explain_images(
@@ -125,9 +171,9 @@ async def explain_images(
         raise HTTPException(status_code=502, detail=f"LLM request failed: {e!s}") from e
 
 
-def _form_bool(raw: str) -> bool:
-    return str(raw).lower() in ("true", "1", "yes", "on")
-
+# ─────────────────────────────────────────────────────────────────────────────
+# /pdf  — PDF upload
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/pdf", response_model=ExplainResponse)
 async def explain_pdf(
@@ -138,7 +184,12 @@ async def explain_pdf(
     ocr_pages: str = Form("true"),
     ocr_images: str = Form("true"),
 ) -> ExplainResponse:
-    """Extract text page-by-page (tables + optional OCR), then explain using that context."""
+    """
+    Extract text page-by-page (tables + optional OCR), then explain using that context.
+
+    **Auto-language detection:** write *"explain in Tamil"* in `topic_hint`
+    and the language is picked up automatically.
+    """
     if not file.filename or not str(file.filename).lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Upload a single .pdf file.")
     data = await file.read()
