@@ -47,7 +47,7 @@ async def create_illustration(body: IllustrationRequest) -> IllustrationResponse
                 style_suffix=body.style,
             )
         else:
-            logger.info("Using DALL-E 3 for image generation")
+            logger.info("Using gpt-image-2 for image generation")
             b64, mime = await illustration_openai.generate_illustration_png_b64(
                 settings,
                 prompt=body.prompt,
