@@ -1,5 +1,3 @@
-from urllib.parse import quote
-
 from fastapi import APIRouter, HTTPException, Response
 
 from app.schemas.language import normalize_output_language
@@ -11,6 +9,7 @@ router = APIRouter()
 
 @router.post("/generate", response_model=SlideDeckResponse)
 async def generate_slide_deck(body: SlideDeckGenerateRequest) -> SlideDeckResponse:
+    """Generate a slide deck from the provided topic and lesson context."""
     stack = (body.stack or "openai").lower().strip()
     llm_provider = "openai" if stack == "openai" else "ollama"
     lang = normalize_output_language(body.output_language)
@@ -31,15 +30,13 @@ async def generate_slide_deck(body: SlideDeckGenerateRequest) -> SlideDeckRespon
 
 @router.get("/{deck_id}/file")
 async def download_slide_deck(deck_id: str) -> Response:
+    """Download a previously generated slide deck file by deck ID."""
     data = await slides_service.get_deck_file(deck_id)
     if not data:
         raise HTTPException(status_code=404, detail="Slide deck not found or expired.")
     pptx_bytes, filename = data
-
-    # Fix: URL-encode filename to handle non-ASCII characters (Hindi, etc.)
-    encoded_filename = quote(filename)
     return Response(
         content=pptx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

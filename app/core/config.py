@@ -31,7 +31,19 @@ class Settings(BaseSettings):
     # Optional: stock photos in generated slide decks (https://www.pexels.com/api/)
     pexels_api_key: str | None = None
 
+    # Image generation stability settings
+    image_generation_retries: int = 3
+    image_generation_retry_delay: float = 1.0  # Initial delay in seconds
+    # Default image model name for provider (OpenAI image model). Can be overridden in .env
+    image_generation_model: str = "gpt-image-2"
+    # OpenAI image quality: gpt-image-2 supports low, medium, high.
+    # Default to low for faster turn-around in the Learn flow.
+    image_generation_quality: str = "low"
+    sd_webui_seed: int = -1  # -1 for random, or specific seed for deterministic output
+    llm_prompt_generation_retries: int = 3
+
 
 @lru_cache
 def get_settings() -> Settings:
+    """Return the cached application settings instance."""
     return Settings()

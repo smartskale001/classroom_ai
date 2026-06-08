@@ -54,6 +54,7 @@ def _flatten_ollama_prompt(messages: list[Message], vision_model: bool) -> tuple
 
 class OllamaProvider:
     def __init__(self, settings: Settings, *, vision: bool = False) -> None:
+        """Initialize the Ollama client settings for text or vision requests."""
         self._base = settings.ollama_base_url.rstrip("/")
         self._model = settings.ollama_vision_model if vision else settings.ollama_chat_model
         self._vision = vision
@@ -65,6 +66,7 @@ class OllamaProvider:
         max_tokens: int = 4096,
         temperature: float = 0.4,
     ) -> str:
+        """Send a chat request to Ollama and return the response text."""
         prompt, images = _flatten_ollama_prompt(messages, vision_model=self._vision)
         payload: dict[str, Any] = {
             "model": self._model,

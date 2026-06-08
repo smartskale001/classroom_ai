@@ -43,16 +43,9 @@ def _prompt(
         '- deck_title: short presentation title (max 80 characters)\n'
         f"- slides: array of exactly {slide_count} objects. Each object has:\n"
         "  title (slide heading), bullets (array of 3 to 6 concise strings), optional speaker_notes (teacher script),\n"
-        "  and image_query (English only, REQUIRED on every slide): a vivid, SPECIFIC stock-photo search phrase "
-        "(4–8 words) derived from the actual slide title and bullet content. "
-        "The query must be a concrete visual scene — a real-world subject, setting, or action — "
-        "NOT abstract concepts. Examples: "
-        "\"astronaut floating in space station\", "
-        "\"scientist examining DNA strands in lab\", "
-        "\"ancient roman aqueduct stone arch\", "
-        "\"child reading book under tree sunlight\". "
-        "Bad examples (too generic, do NOT use): \"education classroom learning\", \"science concept background\", \"technology abstract\". "
-        "Make the query unique per slide — reflect what THAT slide is specifically about.\n\n"
+        "  and image_query (English only, REQUIRED on every slide): a vivid stock-photo search phrase (4–10 words) "
+        "for a cinematic, realistic wide photo (e.g. \"sunlight forest canopy science education\", "
+        "\"student laboratory microscope teamwork\"). Avoid generic words like \"education\" alone; be specific.\n\n"
         "Rules:\n"
         "- Bullets must be teaching points, not slide design instructions.\n"
         "- Order slides as you would teach: intro → concepts → examples → summary.\n"
@@ -121,7 +114,7 @@ def _normalize_slides(raw_slides: list, *, expected: int, topic: str) -> list[Sl
 
 
 def _synthetic_slide_background(slide_index: int, total: int) -> bytes:
-    """16:9 PNG — cinematic gradient + accents."""
+    """16:9 PNG — cinematic gradient + accents (Notebook LM–inspired, no stock API)."""
     from PIL import Image, ImageDraw
 
     w, h = 1600, 900
@@ -158,13 +151,13 @@ def _synthetic_slide_background(slide_index: int, total: int) -> bytes:
 
 
 def _prepare_stock_photo_for_slide(raw: bytes) -> bytes:
-    """Resize to 16:9 right-panel size and blend a dark veil."""
+    """Letterbox to 16:9 and blend a dark veil so white text reads like a modern deck."""
     from PIL import Image
 
     im = Image.open(io.BytesIO(raw)).convert("RGB")
-    im = im.resize((800, 900), Image.Resampling.LANCZOS)  # right-half panel size
+    im = im.resize((1600, 900), Image.Resampling.LANCZOS)
     veil = Image.new("RGB", im.size, (8, 11, 22))
-    blended = Image.blend(im, veil, 0.25)  # lighter veil so image is more visible
+    blended = Image.blend(im, veil, 0.36)
     buf = io.BytesIO()
     blended.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
@@ -181,13 +174,9 @@ def _build_pptx_bytes(
     from pptx.dml.color import RGBColor
     from pptx.enum.shapes import MSO_SHAPE
     from pptx.enum.text import MSO_ANCHOR
-    from pptx.util import Emu, Inches, Pt
+    from pptx.util import Inches, Pt
 
     prs = Presentation()
-    # Fix: set correct 16:9 widescreen dimensions
-    prs.slide_width = Emu(12192000)   # 13.33 inches
-    prs.slide_height = Emu(6858000)   # 7.5 inches
-
     sw, sh = prs.slide_width, prs.slide_height
 
     try:
@@ -205,16 +194,10 @@ def _build_pptx_bytes(
         stream = io.BytesIO(png_bytes)
         slide.shapes.add_picture(stream, 0, 0, width=sw, height=sh)
 
-    def _right_panel_picture(slide, png_bytes: bytes) -> None:
-        """Place stock photo only on the right half of the slide."""
-        stream = io.BytesIO(png_bytes)
-        left = Inches(5.5)
-        slide.shapes.add_picture(stream, left, 0, width=sw - left, height=sh)
-
     def _rgb(r: int, g: int, b: int) -> RGBColor:
         return RGBColor(r, g, b)
 
-    # --- Opening "title" slide ---
+    # --- Opening "title" slide (Notebook-style hero) ---
     hero = _synthetic_slide_background(-1, max(len(slides), 1))
     s0 = prs.slides.add_slide(blank_layout)
     _full_bleed_picture(s0, hero)
@@ -257,75 +240,58 @@ def _build_pptx_bytes(
     for idx, item in enumerate(slides):
         img_b = slide_images[idx] if idx < len(slide_images) else _synthetic_slide_background(idx, len(slides))
         slide = prs.slides.add_slide(blank_layout)
+        _full_bleed_picture(slide, img_b)
 
         has_stock = bool(item.photo_attribution)
-
         if has_stock:
-            # Dark background base
-            bg = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, sw, sh)
-            bg.fill.solid()
-            bg.fill.fore_color.rgb = _rgb(11, 15, 28)
-            bg.line.fill.background()
-
-            # Stock photo on right half only — now actually visible
-            _right_panel_picture(slide, img_b)
-
-            # Dark panel over left half for text readability
-            panel = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, Inches(5.5), sh)
+            panel = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, Inches(5.85), sh)
             panel.fill.solid()
             panel.fill.fore_color.rgb = _rgb(11, 15, 28)
-            panel.fill.transparency = 0.08
+            panel.fill.transparency = 0.12
             panel.line.fill.background()
-
-            title_left = Inches(0.45)
-            title_w = Inches(4.85)
-            body_left = Inches(0.45)
-            body_w = Inches(4.85)
-            body_top = Inches(1.45)
-            body_h = Inches(5.2)
+            title_left = Inches(0.55)
+            title_w = Inches(5.15)
+            body_left = Inches(0.55)
+            body_w = Inches(5.0)
+            body_top = Inches(1.55)
+            body_h = Inches(4.85)
         else:
-            # Synthetic gradient full bleed
-            _full_bleed_picture(slide, img_b)
-            leg = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, Inches(4.3), sw, Inches(3.2))
+            leg = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, Inches(4.65), sw, Inches(2.85))
             leg.fill.solid()
             leg.fill.fore_color.rgb = _rgb(8, 10, 20)
             leg.fill.transparency = 0.28
             leg.line.fill.background()
-            title_left = Inches(0.55)
-            title_w = Inches(12.2)
-            body_left = Inches(0.65)
-            body_w = Inches(12.0)
-            body_top = Inches(1.35)
-            body_h = Inches(5.2)
+            title_left = Inches(0.65)
+            title_w = Inches(11.5)
+            body_left = Inches(0.75)
+            body_w = Inches(11.2)
+            body_top = Inches(1.45)
+            body_h = Inches(4.9)
 
-        # Title
-        tbox = slide.shapes.add_textbox(title_left, Inches(0.32), title_w, Inches(0.95))
+        tbox = slide.shapes.add_textbox(title_left, Inches(0.42), title_w, Inches(0.95))
         ttf = tbox.text_frame
         ttf.text = item.title[:250]
         tp = ttf.paragraphs[0]
-        tp.font.size = Pt(28) if has_stock else Pt(30)
+        tp.font.size = Pt(30) if has_stock else Pt(32)
         tp.font.bold = True
         tp.font.color.rgb = _rgb(248, 250, 252)
 
-        # Bullets
         bbox = slide.shapes.add_textbox(body_left, body_top, body_w, body_h)
         tf = bbox.text_frame
         tf.word_wrap = True
         tf.vertical_anchor = MSO_ANCHOR.TOP
         bullets = item.bullets[:8] or ["—"]
         tf.text = bullets[0][:500]
-        tf.paragraphs[0].font.size = Pt(16 if has_stock else 17)
+        tf.paragraphs[0].font.size = Pt(17 if has_stock else 18)
         tf.paragraphs[0].font.color.rgb = _rgb(214, 222, 235)
         tf.paragraphs[0].space_after = Pt(8)
         for b in bullets[1:]:
             p = tf.add_paragraph()
             p.text = b[:500]
             p.level = 0
-            p.font.size = Pt(15 if has_stock else 16)
+            p.font.size = Pt(16 if has_stock else 17)
             p.font.color.rgb = _rgb(196, 208, 224)
             p.space_after = Pt(6)
-
-        # Speaker notes
         notes_parts: list[str] = []
         if item.speaker_notes:
             notes_parts.append(item.speaker_notes[:4000])
@@ -390,13 +356,6 @@ async def generate_slide_deck(
         if pexels_key:
             q = (s.image_query or topic).strip()
             out = await fetch_landscape_photo_bytes(pexels_key, q)
-            # Fallback 1: retry with just the slide title if image_query fails
-            if not out:
-                fallback_q = s.title.strip()
-                out = await fetch_landscape_photo_bytes(pexels_key, fallback_q)
-            # Fallback 2: use the topic itself
-            if not out:
-                out = await fetch_landscape_photo_bytes(pexels_key, topic)
             if out:
                 raw, _mime, attr = out
                 attrs[i] = attr

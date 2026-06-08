@@ -22,7 +22,7 @@ async def fetch_landscape_photo_bytes(
         async with httpx.AsyncClient() as client:
             r = await client.get(
                 "https://api.pexels.com/v1/search",
-                params={"query": q, "per_page": 5, "orientation": "landscape"},  # ← changed from 1 to 5
+                params={"query": q, "per_page": 1, "orientation": "landscape"},
                 headers={"Authorization": api_key},
                 timeout=25.0,
             )
@@ -32,8 +32,7 @@ async def fetch_landscape_photo_bytes(
             photos = data.get("photos") or []
             if not photos:
                 return None
-            # ← Pick highest resolution photo instead of always first result
-            p0 = max(photos, key=lambda p: int(p.get("width", 0)) * int(p.get("height", 0)))
+            p0 = photos[0]
             src = p0.get("src") or {}
             url = src.get("large") or src.get("medium") or src.get("original")
             if not url:

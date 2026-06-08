@@ -34,9 +34,10 @@ import { MermaidDiagram } from './MermaidDiagram'
 import './App.css'
 
 type Mode = 'text' | 'images' | 'pdf'
-type MainTab = 'learn' | 'video' | 'quiz' | 'slides' | 'flashcards' | 'infographic' | 'listen'
+type MainTab = 'learn' | 'video' | 'quiz' | 'slides' | 'flashcards' | 'infographic' | 'listen' | 'images'
 
 /** Fenced ```mermaid in explanation_markdown — render with the same pipeline as `mermaid_diagram`. */
+/** Render fenced Mermaid blocks inside Markdown with the diagram renderer. */
 function MarkdownPre({ children, ...rest }: ComponentPropsWithoutRef<'pre'>) {
   const arr = Children.toArray(children)
   const codeEl = arr.find((c) => isValidElement(c) && c.type === 'code')
@@ -54,6 +55,7 @@ function MarkdownPre({ children, ...rest }: ComponentPropsWithoutRef<'pre'>) {
   return <pre {...rest}>{children}</pre>
 }
 
+/** Return a short human-friendly label for a visual brief type. */
 function briefKindLabel(b: { kind: string; suggested_format: string }): string {
   const f = (b.suggested_format || '').toLowerCase()
   const k = (b.kind || '').toLowerCase()
@@ -62,11 +64,12 @@ function briefKindLabel(b: { kind: string; suggested_format: string }): string {
   return 'Visual idea'
 }
 
+/** Root ClassroomAI page component that wires the Learn/Quiz/Slides/Audio flows. */
 function App() {
   const [mainTab, setMainTab] = useState<MainTab>('learn')
   const [mode, setMode] = useState<Mode>('text')
   const [outputLanguage, setOutputLanguage] = useState<OutputLanguageCode>('english')
-  const [stack, setStack] = useState<ModelStack>('opensource')
+  const [stack, setStack] = useState<ModelStack>('openai')
   const [topicHint, setTopicHint] = useState('')
   const [chapterText, setChapterText] = useState('')
   const [files, setFiles] = useState<File[]>([])
@@ -134,10 +137,9 @@ function App() {
   const [illustrationErr, setIllustrationErr] = useState<string | null>(null)
   const [illustrationUsePexels, setIllustrationUsePexels] = useState(false)
 
-  const [pipelineStatus, setPipelineStatus] = useState<string | null>(null)
-
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  /** Stop the active polling timer for video-job updates, if one exists. */
   const stopPoll = useCallback(() => {
     if (pollRef.current) {
       clearInterval(pollRef.current)
@@ -166,6 +168,7 @@ function App() {
   }, [videoSource, opensourceAnimation])
 
   /** Quiz / slides / etc.: send both source chapter (if any) and the generated lesson so the LLM is grounded in what you provided. */
+  /** Merge chapter text and generated lesson content into a shared context block. */
   const getLessonContextFromExplain = (explain: ExplainResponse | null): string | null => {
     const chunks: string[] = []
     if ((mode === 'text' || mode === 'pdf') && chapterText.trim()) {
@@ -193,6 +196,7 @@ function App() {
 
   const derivedQuizContext = getLessonContextFromExplain(result)
 
+  /** Generate quiz data from the current lesson context. */
   const runQuizPipeline = async (ctx: string | null, topic: string) => {
     setQuizError(null)
     setQuizData(null)
@@ -216,6 +220,7 @@ function App() {
     }
   }
 
+  /** Generate slide-deck data from the current lesson context. */
   const runSlideDeckPipeline = async (ctx: string | null, topic: string) => {
     setSlidesError(null)
     setSlideDeck(null)
@@ -237,6 +242,7 @@ function App() {
     }
   }
 
+  /** Generate flashcards from the current lesson context. */
   const runFlashcardsPipeline = async (ctx: string | null, topic: string) => {
     setFlashError(null)
     setFlashData(null)
@@ -263,6 +269,7 @@ function App() {
     }
   }
 
+  /** Generate an infographic image from the current lesson context. */
   const runInfographicPipeline = async (ctx: string | null, topic: string) => {
     setInfoErr(null)
     setInfoImage(null)
@@ -289,6 +296,7 @@ function App() {
     }
   }
 
+  /** Generate spoken audio for the current lesson context. */
   const runLessonAudioPipeline = async (ctx: string | null) => {
     setListenErr(null)
     setSpeechInfo(null)
@@ -321,9 +329,9 @@ function App() {
     }
   }
 
+  /** Run the full Learn flow and then launch the downstream content generators. */
   const runExplain = async () => {
     setError(null)
-    setPipelineStatus(null)
     setResult(null)
     setQuizError(null)
     setQuizData(null)
@@ -369,7 +377,6 @@ function App() {
 
     setLoading(true)
     try {
-      setPipelineStatus('Writing explanation…')
       let data: ExplainResponse
       if (mode === 'text') {
         data = await explainFromText(chapterText, outputLanguage, topicHint, stack)
@@ -385,26 +392,15 @@ function App() {
 
       const ctx = getLessonContextFromExplain(data)
 
-      setPipelineStatus('Generating quiz…')
-      await runQuizPipeline(ctx, topic)
-
-      setPipelineStatus('Building slide deck…')
-      await runSlideDeckPipeline(ctx, topic)
-
-      setPipelineStatus('Generating flashcards…')
-      await runFlashcardsPipeline(ctx, topic)
-
-      setPipelineStatus('Creating infographic…')
-      await runInfographicPipeline(ctx, topic)
-
-      setPipelineStatus('Synthesizing lesson audio…')
-      await runLessonAudioPipeline(ctx)
-
-      setPipelineStatus('Done — open Quiz, Slides, Flashcards, Infographic, or Listen to review. Video stays on the Video tab.')
-      window.setTimeout(() => setPipelineStatus(null), 8000)
+      await Promise.all([
+        runQuizPipeline(ctx, topic),
+        runSlideDeckPipeline(ctx, topic),
+        runFlashcardsPipeline(ctx, topic),
+        runInfographicPipeline(ctx, topic),
+        runLessonAudioPipeline(ctx),
+      ])
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
-      setPipelineStatus(null)
     } finally {
       setLoading(false)
     }
@@ -422,10 +418,12 @@ function App() {
       }).length
     : 0
 
+  /** Regenerate the slide deck from the already-produced lesson context. */
   const runSlideDeck = async () => {
     await runSlideDeckPipeline(derivedQuizContext, derivedQuizTopic)
   }
 
+  /** Regenerate spoken audio from the already-produced lesson context. */
   const runLessonAudio = async () => {
     const ctx = derivedQuizContext
     if (!ctx?.trim()) {
@@ -435,6 +433,7 @@ function App() {
     await runLessonAudioPipeline(ctx)
   }
 
+  /** Regenerate flashcards from the already-produced lesson context. */
   const runFlashcards = async () => {
     const ctx = derivedQuizContext
     if (!ctx?.trim()) {
@@ -444,6 +443,7 @@ function App() {
     await runFlashcardsPipeline(ctx, derivedQuizTopic)
   }
 
+  /** Regenerate the infographic from the already-produced lesson context. */
   const runInfographic = async () => {
     const ctx = derivedQuizContext
     if (!ctx?.trim()) {
@@ -453,6 +453,7 @@ function App() {
     await runInfographicPipeline(ctx, derivedQuizTopic)
   }
 
+  /** Download the generated lesson audio file if one exists. */
   const downloadLessonAudio = () => {
     if (!audioUrl || !speechInfo) return
     const a = document.createElement('a')
@@ -462,6 +463,7 @@ function App() {
     a.click()
   }
 
+  /** Download the generated slide deck file if one exists. */
   const downloadSlideDeck = async () => {
     if (!slideDeck) return
     try {
@@ -480,6 +482,7 @@ function App() {
 
   useEffect(() => {
     if (mainTab !== 'slides' || !slideDeck?.slides.length) return
+    /** Handle keyboard shortcuts for quiz navigation. */
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'ArrowLeft') {
         e.preventDefault()
@@ -496,6 +499,7 @@ function App() {
 
   useEffect(() => {
     if (mainTab !== 'flashcards' || !flashData?.cards.length) return
+    /** Handle keyboard shortcuts for flashcard navigation. */
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'ArrowLeft') {
         e.preventDefault()
@@ -512,10 +516,12 @@ function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [mainTab, flashData])
 
+  /** Regenerate quiz questions from the current lesson context. */
   const runQuiz = async () => {
     await runQuizPipeline(derivedQuizContext, derivedQuizTopic)
   }
 
+  /** Start a video-generation job for the current lesson or selected stack. */
   const startVideo = async () => {
     setVideoErr(null)
     if (videoSource === 'lesson_overview') {
@@ -569,6 +575,7 @@ function App() {
       setVideoJob(job)
       stopPoll()
 
+      /** Poll the video job until it finishes or fails. */
       const tick = async () => {
         try {
           const j = await getVideoJob(job.id)
@@ -599,6 +606,7 @@ function App() {
     }
   }
 
+  /** Generate or fetch a supporting illustration for the current lesson. */
   const runIllustration = async () => {
     if (!result?.visual_briefs?.length) return
     const first = result.visual_briefs[0]
@@ -624,9 +632,8 @@ function App() {
         <div className="app-header-main app-header-panel">
           <h1>ClassroomAI</h1>
           <p className="sub">
-            On Learn, Generate explanation builds the lesson, then runs quiz, slides, flashcards, infographic, and audio
-            one after another (not video — use the Video tab for that). Each tab still has its own Generate if you want
-            to redo one piece.
+            Create a lesson from chapter text, screenshots, or a PDF — then review it with a quiz, flashcards, slides,
+            an infographic, and audio.
           </p>
         </div>
       </header>
@@ -634,6 +641,9 @@ function App() {
       <div className="tabs">
         <button type="button" className={mainTab === 'learn' ? 'active' : ''} onClick={() => setMainTab('learn')}>
           Learn
+        </button>
+        <button type="button" className={mainTab === 'images' ? 'active' : ''} onClick={() => setMainTab('images')}>
+          Images
         </button>
         <button type="button" className={mainTab === 'video' ? 'active' : ''} onClick={() => setMainTab('video')}>
           Video
@@ -644,14 +654,14 @@ function App() {
         <button type="button" className={mainTab === 'slides' ? 'active' : ''} onClick={() => setMainTab('slides')}>
           Slides
         </button>
-        <button type="button" className={mainTab === 'flashcards' ? 'active' : ''} onClick={() => setMainTab('flashcards')}>
-          Flashcards
-        </button>
         <button
           type="button"
-          className={mainTab === 'infographic' ? 'active' : ''}
-          onClick={() => setMainTab('infographic')}
+          className={mainTab === 'flashcards' ? 'active' : ''}
+          onClick={() => setMainTab('flashcards')}
         >
+          Flashcards
+        </button>
+        <button type="button" className={mainTab === 'infographic' ? 'active' : ''} onClick={() => setMainTab('infographic')}>
           Infographic
         </button>
         <button type="button" className={mainTab === 'listen' ? 'active' : ''} onClick={() => setMainTab('listen')}>
@@ -685,13 +695,13 @@ function App() {
         <>
           <div className="tabs" style={{ marginTop: '0.75rem' }}>
             <button type="button" className={mode === 'text' ? 'active' : ''} onClick={() => setMode('text')}>
-              Chapter text
+              Text
             </button>
             <button type="button" className={mode === 'images' ? 'active' : ''} onClick={() => setMode('images')}>
               Screenshots
             </button>
             <button type="button" className={mode === 'pdf' ? 'active' : ''} onClick={() => setMode('pdf')}>
-              PDF chapter
+              PDF
             </button>
           </div>
 
@@ -740,10 +750,9 @@ function App() {
                 <input type="file" accept="image/*" multiple onChange={(e) => setFiles(e.target.files ? Array.from(e.target.files) : [])} />
               </label>
             )}
-            <div className="row">
-              <button type="button" className="primary" disabled={loading} onClick={runExplain}>{loading ? 'Working…' : 'Generate explanation'}</button>
+            <div className="row learn-actions">
+              <button type="button" className="primary" disabled={loading} onClick={runExplain}>{loading ? 'Creating lesson…' : 'Start Learn'}</button>
             </div>
-            {pipelineStatus && <p className="hint">{pipelineStatus}</p>}
             {error && <p className="err">{error}</p>}
           </div>
 
@@ -783,7 +792,7 @@ function App() {
 
               {result.visual_briefs.length > 0 && (
                 <>
-                  <h2 style={{ marginTop: '1.25rem' }}>Visuals &amp; animation ideas</h2>
+                  <h2 style={{ marginTop: '1.25rem' }}>Visual ideas</h2>
                   <div className="briefs">
                     {result.visual_briefs.map((b, i) => (
                       <div className="brief" key={i}><span className="brief-badge">{briefKindLabel(b)}</span><strong>{b.title}</strong><div>{b.description}</div></div>
@@ -796,15 +805,15 @@ function App() {
                         checked={illustrationUsePexels}
                         onChange={(e) => setIllustrationUsePexels(e.target.checked)}
                       />
-                      <span className="hint">Stock photo (Pexels)</span>
+                      <span className="hint">Use stock image</span>
                     </label>
                     <button type="button" className="secondary" disabled={illustrationBusy || loading} onClick={runIllustration}>
-                      {illustrationBusy ? (illustrationUsePexels ? 'Loading…' : 'Drawing…') : illustrationUsePexels ? 'Stock illustration' : 'AI illustration'}
+                      {illustrationBusy ? (illustrationUsePexels ? 'Loading…' : 'Drawing…') : illustrationUsePexels ? 'Generate stock image' : 'Generate image'}
                     </button>
                   </div>
                   {illustrationUsePexels && (
                     <p className="hint" style={{ marginTop: '0.35rem' }}>
-                      Uses your first visual brief as search keywords. Needs <code>PEXELS_API_KEY</code> on the server.
+                      Uses the first visual idea as search keywords. Needs <code>PEXELS_API_KEY</code> on the server.
                     </p>
                   )}
                   {illustrationErr && <p className="err">{illustrationErr}</p>}
@@ -815,6 +824,55 @@ function App() {
                       alt={illustrationUsePexels ? 'Pexels stock photo' : 'Generated illustration'}
                     />
                   )}
+                  {/* --- Show all images at the bottom --- */}
+                  <div style={{ marginTop: '2rem' }}>
+                    <h2>Visual gallery</h2>
+                    <div className="asset-grid">
+                      {result.visual_briefs.map((b, i) => (
+                        <article className="asset-card" key={`asset-${i}`}>
+                          <div className="brief-badge">{briefKindLabel(b)}</div>
+                          <strong>{b.title}</strong>
+                          <div className="hint asset-desc">{b.description}</div>
+                          {b.src ? (
+                            <img className="illustration-img asset-img" src={b.src} alt={b.title || 'Visual'} />
+                          ) : null}
+                          {b.mermaid_diagram ? (
+                            <div className="diagram-box asset-diagram">
+                              <MermaidDiagram code={b.mermaid_diagram} />
+                            </div>
+                          ) : null}
+                        </article>
+                      ))}
+                      {illustrationSrc ? (
+                        <article className="asset-card">
+                          <strong>{illustrationUsePexels ? 'Stock image' : 'Image'}</strong>
+                          <div className="hint asset-desc">
+                            {illustrationUsePexels
+                              ? 'A searchable stock image related to the current lesson.'
+                              : 'An illustration related to the lesson topic.'}
+                          </div>
+                          <img
+                            className="illustration-img asset-img"
+                            src={illustrationSrc}
+                            alt={illustrationUsePexels ? 'Pexels stock photo' : 'Illustration'}
+                          />
+                        </article>
+                      ) : null}
+                      {infoImage ? (
+                        <article className="asset-card">
+                          <div className="brief-badge">Reference image</div>
+                          <strong>Lesson image</strong>
+                          <div className="hint asset-desc">{infoImage.prompt || 'A lesson-related supporting image.'}</div>
+                          <img className="illustration-img asset-img" src={infoImage.src} alt={infoImage.prompt || 'Relevant image'} />
+                        </article>
+                      ) : null}
+                      {result.visual_briefs.filter((b) => b.src || b.mermaid_diagram).length === 0 && !illustrationSrc && !infoImage && (
+                        <span style={{ color: '#888', fontStyle: 'italic' }}>
+                          No visuals yet.
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </>
               )}
             </section>
@@ -1195,7 +1253,7 @@ function App() {
           {infoErr && <p className="err">{infoErr}</p>}
           {infoImage && (
             <div className="infographic-wrap">
-              <img className="infographic-img" src={infoImage.src} alt="Generated lesson infographic" />
+              <img className="infographic-img" src={infoImage.src} alt="Lesson infographic" />
               {infoImage.prompt ? (
                 <details className="infographic-prompt-details">
                   <summary>Image prompt used</summary>

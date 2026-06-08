@@ -3,12 +3,11 @@
 from typing import Literal, cast
 
 from openai import AsyncOpenAI
-from openai.types.video_seconds import VideoSeconds
-
 from app.core.config import Settings
 
 
 def _video_client(settings: Settings) -> AsyncOpenAI:
+    """Build a configured OpenAI client for video jobs."""
     if not settings.openai_api_key or not settings.openai_api_key.strip():
         raise ValueError("OPENAI_API_KEY is required for video generation (Sora API).")
     # Chained jobs can run a long time (several segments × queue + render).
@@ -19,7 +18,11 @@ def _video_client(settings: Settings) -> AsyncOpenAI:
     )
 
 
-def _extend_plan_for_target(total_seconds: int) -> list[Literal["4", "8", "12"]]:
+# Define VideoSeconds as a Literal type
+VideoSeconds = Literal["4", "8", "12"]
+
+
+def _extend_plan_for_target(total_seconds: int) -> list[VideoSeconds]:
     """
     `videos.create` is capped at 12s. Each `videos.extend` adds another 4/8/12s segment.
     There is no single API parameter for 30s — we chain segments to approximate the target.
@@ -43,7 +46,8 @@ async def create_video_job(
     seconds: str,
     size: str | None,
     input_reference_image_url: str | None,
-):
+) -> object:
+    """Submit a single video generation job to the OpenAI API."""
     client = _video_client(settings)
     kwargs: dict = {
         "prompt": prompt,
@@ -65,7 +69,7 @@ async def create_chained_video_job(
     size: str | None,
     input_reference_image_url: str | None,
     chain_target_seconds: int,
-):
+) -> object:
     """
     One 12s create, then extend segments until we approximate chain_target_seconds.
     Returns the final Video metadata (last segment id is what you download).
@@ -115,12 +119,14 @@ async def create_chained_video_job(
     return video
 
 
-async def retrieve_video(settings: Settings, video_id: str):
+async def retrieve_video(settings: Settings, video_id: str) -> object:
+    """Fetch video metadata for a given video ID."""
     client = _video_client(settings)
     return await client.videos.retrieve(video_id)
 
 
 async def download_video_bytes(settings: Settings, video_id: str) -> bytes:
+    """Download the rendered video bytes for the given video ID."""
     client = _video_client(settings)
     res = await client.videos.download_content(video_id, variant="video")
     return res.content
